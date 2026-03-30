@@ -8,9 +8,12 @@ export const math = create(all)
 // storing { velocity: 5 }. Subsequent evaluations can then use `velocity`.
 export const scope: Record<string, unknown> = {}
 
-export function evaluateCell(input: string): { result: string; error: string | null } {
+export function evaluateCell(
+  input: string,
+  customScope?: Record<string, unknown>
+): { result: string; error: string | null } {
   try {
-    const result = math.evaluate(input, scope)
+    const result = math.evaluate(input, customScope ?? scope)
     return {
       result: result !== undefined ? String(result) : '',
       error: null,
