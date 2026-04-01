@@ -2,24 +2,10 @@ import { useState, useRef, useEffect } from 'react'
 import Cell from './Cell'
 import Graph from './Graph'
 import type { CellData } from '../types'
-import { evaluateCell, isGraphable } from '../lib/mathScope'
+import { evaluateCell, isGraphable, latexToMathjs } from '../lib/mathScope'
 
 function makeCell(): CellData {
   return { id: crypto.randomUUID(), input: '', output: null, error: null, graphEnabled: false }
-}
-
-// Convert display string to math.js-evaluable string:
-// "num/den\x01rest" → "(num/den)rest"
-// Plain "\x01" without preceding fraction just gets stripped
-function toMathString(input: string): string {
-  // Replace /token\x01 with /token) and add ( before the numerator token
-  // Pattern: find / followed by token followed by \x01
-  let result = input
-  // Walk and wrap fractions: find each /...\x01 and wrap with parens around num/den
-  result = result.replace(/([A-Za-z0-9_.]+)\/([^\x01]*)\x01/g, '($1/$2)')
-  // Strip any remaining sentinels (fractions without sentinel are fine as-is)
-  result = result.replace(/\x01/g, '')
-  return result
 }
 
 function recomputeAll(cells: CellData[]): CellData[] {
@@ -27,14 +13,14 @@ function recomputeAll(cells: CellData[]): CellData[] {
   for (let pass = 0; pass < 2; pass++) {
     cells.forEach((cell) => {
       if (!cell.input.trim()) return
-      const input = toMathString(cell.input).trim()
+      const input = latexToMathjs(cell.input).trim()
       if (/^[xy]\s*=/.test(input)) return
       try { evaluateCell(input, fullScope) } catch { /* skip */ }
     })
   }
 
   return cells.map((cell) => {
-    const mathInput = toMathString(cell.input)
+    const mathInput = latexToMathjs(cell.input)
     if (!mathInput.trim()) return { ...cell, output: null, error: null, graphEnabled: false }
 
     const graphEnabled = isGraphable(mathInput, fullScope)
@@ -106,12 +92,12 @@ export default function Notebook() {
 
   const scopeSnapshot: Record<string, unknown> = {}
   cells.forEach((c) => {
-    const input = c.input.trim()
+    const input = latexToMathjs(c.input).trim()
     if (!input || /^[xy]\s*=/.test(input)) return
     try { evaluateCell(input, scopeSnapshot) } catch { /* skip */ }
   })
 
-  const graphExpressions = cells.filter((c) => c.graphEnabled).map((c) => c.input)
+  const graphExpressions = cells.filter((c) => c.graphEnabled).map((c) => latexToMathjs(c.input))
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
