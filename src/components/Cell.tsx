@@ -15,15 +15,16 @@ declare global {
 interface CellProps {
   cell: CellData
   index: number
+  style?: React.CSSProperties
   onUpdate: (id: string, latex: string) => void
   onEnter: (id: string) => void
   onDelete: (id: string) => void
-  onDragStart: (index: number) => void
-  onDrop: (index: number) => void
+  onDragStart: (index: number, clientY: number, cellHeight: number) => void
 }
 
-export default function Cell({ cell, index, onUpdate, onEnter, onDelete, onDragStart, onDrop }: CellProps) {
+export default function Cell({ cell, index, style, onUpdate, onEnter, onDelete, onDragStart }: CellProps) {
   const mathfieldRef = useRef<MathfieldElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
   const [focused, setFocused] = useState(false)
   const [hovering, setHovering] = useState(false)
   const [showTooltip, setShowTooltip] = useState(false)
@@ -42,6 +43,9 @@ export default function Cell({ cell, index, onUpdate, onEnter, onDelete, onDragS
     const mf = mathfieldRef.current
     if (!mf) return
     mf.mathVirtualKeyboardPolicy = 'manual'
+    // Disable all inline shortcuts so plain text like "sin" is treated as a
+    // user variable, not auto-expanded. Backslash commands (\sin, \frac) still work.
+    mf.inlineShortcuts = {}
 
     function handleInput() {
       onUpdate(cell.id, mf!.getValue())
@@ -64,16 +68,21 @@ export default function Cell({ cell, index, onUpdate, onEnter, onDelete, onDragS
 
   return (
     <div
-      style={{ display: 'flex', alignItems: 'stretch', borderBottom: '1px solid #111', background: '#fff' }}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={() => onDrop(index)}
+      ref={rowRef}
+      style={{
+        display: 'flex', alignItems: 'stretch', borderBottom: '1px solid #111', background: '#fff',
+        ...style,
+      }}
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >
       {/* Drag handle */}
       <div
-        draggable
-        onDragStart={() => onDragStart(index)}
+        onMouseDown={(e) => {
+          e.preventDefault() // prevent text selection while dragging
+          const height = rowRef.current?.getBoundingClientRect().height ?? 40
+          onDragStart(index, e.clientY, height)
+        }}
         style={{
           width: '1.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
           flexShrink: 0, cursor: 'grab', color: hovering ? '#bbb' : 'transparent',
