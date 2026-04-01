@@ -3,6 +3,5 @@ export interface CellData {
   input: string
   output: string | null
   error: string | null
-  latex: string | null
   graphEnabled: boolean
 }

@@ -2,14 +2,14 @@ import { create, all } from 'mathjs'
 
 export const math = create(all)
 
-export const scope: Record<string, unknown> = {}
+const defaultScope: Record<string, unknown> = {}
 
 export function evaluateCell(
   input: string,
   customScope?: Record<string, unknown>
 ): { result: string; error: string | null } {
   try {
-    const result = math.evaluate(input, customScope ?? scope)
+    const result = math.evaluate(input, customScope ?? defaultScope)
     return { result: result !== undefined ? String(result) : '', error: null }
   } catch (e) {
     return { result: '', error: (e as Error).message }
