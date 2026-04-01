@@ -75,7 +75,7 @@ export default function Notebook() {
         ))}
       </div>
 
-      <div style={{ flex: 1, minWidth: 0, background: '#fff', overflow: 'hidden', height: '100vh' }}>
+      <div style={{ flex: 1, minWidth: 0, height: '100vh' }}>
         <Graph expressions={graphExpressions} scope={scopeSnapshot} />
       </div>
     </div>
