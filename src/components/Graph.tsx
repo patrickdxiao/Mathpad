@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { math } from '../lib/mathScope'
+import GraphSettings from './GraphSettings'
 
 const GRID_COLOR = '#ebebeb'
 const AXIS_COLOR = '#111'
@@ -121,6 +122,19 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
   const size = useRef({ w: 0, h: 0 })
   const mouse = useRef<{ px: number; py: number } | null>(null)
   const [mouseCoords, setMouseCoords] = useState<{ x: number; y: number } | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsAnchorRef = useRef<HTMLDivElement>(null)
+  const [showXAxis, setShowXAxis] = useState(true)
+  const [showYAxis, setShowYAxis] = useState(true)
+  const [xLabel, setXLabel] = useState('')
+  const [yLabel, setYLabel] = useState('')
+  const [lockViewport, setLockViewport] = useState(false)
+
+  // Range input strings — kept in sync with view whenever settings is open
+  const [xMinStr, setXMinStr] = useState('')
+  const [xMaxStr, setXMaxStr] = useState('')
+  const [yMinStr, setYMinStr] = useState('')
+  const [yMaxStr, setYMaxStr] = useState('')
   // Which intersection node is currently showing its label (index into allIntersections)
   const activeNode = useRef<Set<number>>(new Set())
   // Which curve indices have their nodes visible
@@ -382,6 +396,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
       ctx.textBaseline = 'top'
       ctx.fillText(label, lx, ly)
     }
+
   }, [expressions, colors, scope])
 
   // Handle canvas sizing with devicePixelRatio for sharp rendering
@@ -422,6 +437,8 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     if (!canvas) return
     function onWheel(e: WheelEvent) {
       e.preventDefault()
+      setSettingsOpen(false)
+      if (lockViewport) return
       const { cx, cy, scale } = view.current
       const { w, h } = size.current
       const factor = e.deltaY > 0 ? 1 / 1.05 : 1.05
@@ -435,10 +452,11 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     }
     canvas.addEventListener('wheel', onWheel, { passive: false })
     return () => canvas.removeEventListener('wheel', onWheel)
-  }, [draw])
+  }, [draw, lockViewport])
 
   function handleMouseDown(e: React.MouseEvent) {
-    drag.current = { x: e.clientX, y: e.clientY, cx: view.current.cx, cy: view.current.cy }
+    setSettingsOpen(false)
+    if (!lockViewport) drag.current = { x: e.clientX, y: e.clientY, cx: view.current.cx, cy: view.current.cy }
   }
 
   function handleMouseMove(e: React.MouseEvent) {
@@ -448,7 +466,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     const px = e.clientX - rect.left
     const py = e.clientY - rect.top
     mouse.current = { px, py }
-    if (drag.current) {
+    if (!lockViewport && drag.current) {
       view.current.cx = drag.current.cx - (e.clientX - drag.current.x) / view.current.scale
       view.current.cy = drag.current.cy + (e.clientY - drag.current.y) / view.current.scale
     }
@@ -527,6 +545,29 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     draw()
   }
 
+  function syncRangeStrings() {
+    const { cx, cy, scale } = view.current
+    const { w, h } = size.current
+    setXMinStr(formatLabel(cx - w / 2 / scale))
+    setXMaxStr(formatLabel(cx + w / 2 / scale))
+    setYMinStr(formatLabel(cy - h / 2 / scale))
+    setYMaxStr(formatLabel(cy + h / 2 / scale))
+  }
+
+  function commitRange(xMin: string, xMax: string, yMin: string, yMax: string) {
+    const x0 = parseFloat(xMin), x1 = parseFloat(xMax)
+    const y0 = parseFloat(yMin), y1 = parseFloat(yMax)
+    if (!isFinite(x0) || !isFinite(x1) || !isFinite(y0) || !isFinite(y1)) return
+    if (x1 <= x0 || y1 <= y0) return
+    const { w, h } = size.current
+    const scaleX = w / (x1 - x0)
+    const scaleY = h / (y1 - y0)
+    // Use the more restrictive scale to keep aspect ratio square
+    const scale = Math.min(scaleX, scaleY)
+    view.current = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, scale }
+    draw()
+  }
+
   function handleMouseLeave() {
     drag.current = null
     mouse.current = null
@@ -558,7 +599,13 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
         </div>
       )}
       {/* Top-right controls */}
-      <div style={{ position: 'absolute', top: '12px', right: '14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <div ref={settingsAnchorRef} style={{ position: 'absolute', top: '12px', right: '14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <button onClick={() => { setSettingsOpen((v) => { if (!v) syncRangeStrings(); return !v }) }} style={ICON_BTN_STYLE} title="Settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
         <button onClick={handleResetView} style={ICON_BTN_STYLE} title="Reset view">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
@@ -566,6 +613,21 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
           </svg>
         </button>
       </div>
+      <GraphSettings
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        anchorRef={settingsAnchorRef}
+        showXAxis={showXAxis} onShowXAxisChange={setShowXAxis}
+        showYAxis={showYAxis} onShowYAxisChange={setShowYAxis}
+        xLabel={xLabel} onXLabelChange={setXLabel}
+        yLabel={yLabel} onYLabelChange={setYLabel}
+        xMinStr={xMinStr} onXMinChange={setXMinStr}
+        xMaxStr={xMaxStr} onXMaxChange={setXMaxStr}
+        yMinStr={yMinStr} onYMinChange={setYMinStr}
+        yMaxStr={yMaxStr} onYMaxChange={setYMaxStr}
+        onCommitRange={commitRange}
+        lockViewport={lockViewport} onLockViewportChange={setLockViewport}
+      />
     </div>
   )
 }
