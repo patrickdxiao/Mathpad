@@ -27,7 +27,6 @@ interface CellProps {
 
 
 export interface CellHandle { focus: () => void }
-
 export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, style, onUpdate, onEnter, onDelete, onDragStart, onToggleVisible, onColorChange }, ref) {
   const mathfieldRef = useRef<MathfieldElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -120,7 +119,7 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
               }}
             />
           ) : (
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: cell.color, opacity: 0.7 }} />
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: cell.color }} />
           )
         ) : (
           <span style={{ color: (hovering || focused) ? '#aaa' : 'transparent', fontSize: '0.75rem' }}>⠿</span>

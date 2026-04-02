@@ -4,7 +4,7 @@ import Graph from './Graph'
 import type { CellData, TabData } from '../types'
 import { evaluateCell, isGraphable, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS, math } from '../lib/mathScope'
 
-const PALETTE = ['#1e1b4b', '#1a73e8', '#e8340a', '#188038', '#e37400', '#a142f4', '#007b83', '#c2185b']
+const PALETTE = ['#1e1b4b', '#1a73e8', '#b71c1c', '#188038', '#e37400', '#a142f4', '#007b83', '#c2185b']
 let colorIndex = 0
 
 function makeCell(): CellData {
@@ -90,6 +90,20 @@ function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}
   })
 }
 
+// Scope from all tabs except the given one — shared variables available everywhere
+function buildBaseScope(excludeTabId: string, allTabs: TabData[]): Record<string, unknown> {
+  const base: Record<string, unknown> = {}
+  allTabs.forEach((tab) => {
+    if (tab.id === excludeTabId) return
+    tab.cells.forEach((c) => {
+      const mathInput = latexToMathjs(c.input).trim()
+      if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
+      try { evaluateCell(c.input, base) } catch { /* skip */ }
+    })
+  })
+  return base
+}
+
 // Drag state tracked in a ref so mousemove never causes re-renders
 interface DragState {
   dragIndex: number
@@ -115,20 +129,6 @@ export default function Notebook() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0]
   const cells = activeTab.cells
-
-  // Scope from all tabs except the active one — shared variables available everywhere
-  function buildBaseScope(excludeTabId: string, allTabs: TabData[]): Record<string, unknown> {
-    const base: Record<string, unknown> = {}
-    allTabs.forEach((tab) => {
-      if (tab.id === excludeTabId) return
-      tab.cells.forEach((c) => {
-        const mathInput = latexToMathjs(c.input).trim()
-        if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
-        try { evaluateCell(c.input, base) } catch { /* skip */ }
-      })
-    })
-    return base
-  }
 
   function updateCells(newCells: CellData[]) {
     setTabs((prev) => prev.map((t) => t.id === activeTab.id ? { ...t, cells: newCells } : t))

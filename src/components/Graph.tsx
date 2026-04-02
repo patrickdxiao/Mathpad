@@ -1,7 +1,6 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { math } from '../lib/mathScope'
 
-const COLORS = ['#1e1b4b', '#1a73e8', '#e8340a', '#188038', '#e37400', '#007b83']
 const GRID_COLOR = '#ebebeb'
 const AXIS_COLOR = '#111'
 const LABEL_COLOR = '#888'
@@ -59,7 +58,7 @@ function getVerticalX(expr: string, scope: Record<string, unknown>): number | nu
 }
 
 interface Intersection { x: number; y: number }
-interface TaggedIntersection extends Intersection { curves: Set<number> }
+interface TaggedIntersection extends Intersection { curves: Set<number>; axisNode: boolean }
 
 // Find intersections between two functions over [xMin, xMax] using sign-change detection + bisection
 function findIntersections(
@@ -78,7 +77,12 @@ function findIntersections(
     const curr = f(x) - g(x)
     if (!isFinite(prev) || !isFinite(curr)) { prev = curr; continue }
 
-    if (prev * curr < 0) {
+    if (curr === 0) {
+      // Landed exactly on a root
+      if (!results.some(r => Math.abs(r.x - x) < dx * 2)) {
+        results.push({ x, y: f(x) })
+      }
+    } else if (prev * curr < 0) {
       // Sign change — bisect to find precise x
       let lo = x - dx, hi = x
       for (let i = 0; i < 42; i++) {
@@ -100,6 +104,8 @@ function findIntersections(
   return results
 }
 
+const SNAP_PX = 15
+
 const ICON_BTN_STYLE: React.CSSProperties = {
   width: '30px', height: '30px', borderRadius: '6px',
   border: '1px solid #ddd', background: 'rgba(255,255,255,0.9)',
@@ -114,6 +120,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
   const drag = useRef<{ x: number; y: number; cx: number; cy: number } | null>(null)
   const size = useRef({ w: 0, h: 0 })
   const mouse = useRef<{ px: number; py: number } | null>(null)
+  const [mouseCoords, setMouseCoords] = useState<{ x: number; y: number } | null>(null)
   // Which intersection node is currently showing its label (index into allIntersections)
   const activeNode = useRef<Set<number>>(new Set())
   // Which curve indices have their nodes visible
@@ -214,7 +221,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
 
     // Plot each expression
     expressions.forEach((expr, i) => {
-      ctx.strokeStyle = colors[i] ?? COLORS[i % COLORS.length]
+      ctx.strokeStyle = colors[i]
       ctx.lineWidth = 2
       ctx.lineJoin = 'round'
       ctx.lineCap = 'round'
@@ -251,34 +258,39 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     const allIntersections: TaggedIntersection[] = []
     const tol = (xMax - xMin) / steps * 2
 
-    const addPt = (pt: Intersection, curveIdx: number) => {
+    const addPt = (pt: Intersection, curveIdx: number, axisNode: boolean) => {
       const existing = allIntersections.find(r => Math.abs(r.x - pt.x) < tol && Math.abs(r.y - pt.y) < tol)
       if (existing) { existing.curves.add(curveIdx) }
-      else allIntersections.push({ ...pt, curves: new Set([curveIdx]) })
+      else allIntersections.push({ ...pt, curves: new Set([curveIdx]), axisNode })
     }
 
     plotFns.forEach((fn, i) => {
       if (!fn) return
       // x-axis intersections (roots)
-      findIntersections(fn, zero, xMin, xMax, steps).forEach(pt => addPt({ x: pt.x, y: 0 }, i))
+      findIntersections(fn, zero, xMin, xMax, steps).forEach(pt => addPt({ x: pt.x, y: 0 }, i, true))
       // y-axis crossing (x = 0)
       if (xMin <= 0 && xMax >= 0) {
         const y0val = fn(0)
-        if (isFinite(y0val)) addPt({ x: 0, y: y0val }, i)
+        if (isFinite(y0val)) addPt({ x: 0, y: y0val }, i, true)
       }
     })
     for (let a = 0; a < plotFns.length; a++) {
       for (let b = a + 1; b < plotFns.length; b++) {
         const fa = plotFns[a], fb = plotFns[b]
         if (!fa || !fb) continue
-        findIntersections(fa, fb, xMin, xMax, steps).forEach(pt => { addPt(pt, a); addPt(pt, b) })
+        findIntersections(fa, fb, xMin, xMax, steps).forEach(pt => { addPt(pt, a, false); addPt(pt, b, false) })
       }
     }
     intersectionsRef.current = allIntersections
 
-    // Draw nodes — only for curves that are toggled visible
+    // Draw nodes:
+    // - axis nodes: show if any of their curves are toggled
+    // - curve-curve nodes: show only if all of their curves are toggled
     allIntersections.forEach((pt, idx) => {
-      const belongsToVisible = [...pt.curves].every(c => visibleCurves.current.has(c))
+      const curves = [...pt.curves]
+      const belongsToVisible = pt.axisNode
+        ? curves.some(c => visibleCurves.current.has(c))
+        : curves.every(c => visibleCurves.current.has(c))
       if (!belongsToVisible) return
 
       const px = toX(pt.x), py = toY(pt.y)
@@ -324,8 +336,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
       const { px, py } = mouse.current
       const wx = cx + (px - w / 2) / scale
 
-      // Try to snap to nearest curve within 20px
-      const SNAP_PX = 20
+      // Try to snap to nearest curve within SNAP_PX
       let snapY: number | null = null
       let snapPy = py
       let bestDist = SNAP_PX
@@ -389,20 +400,16 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     return () => observer.disconnect()
   }, [draw])
 
-  // Reset node state only when the set of expressions actually changes (compare by content)
+  // When expressions change, clear stale node state
   const prevExpressionsRef = useRef<string>('')
   const expressionsKey = expressions.join('|')
   useEffect(() => {
     if (expressionsKey === prevExpressionsRef.current) return
-    // Only reset curves that no longer exist
+    // Active node labels are keyed by index into intersectionsRef — always stale after a change
+    activeNode.current.clear()
+    // Drop visible curve indices that no longer exist
     const newCount = expressions.length
     visibleCurves.current = new Set([...visibleCurves.current].filter(i => i < newCount))
-    for (const idx of [...activeNode.current]) {
-      const pt = intersectionsRef.current[idx]
-      if (!pt || ![...pt.curves].every(c => visibleCurves.current.has(c))) {
-        activeNode.current.delete(idx)
-      }
-    }
     prevExpressionsRef.current = expressionsKey
   }, [expressionsKey])
 
@@ -438,11 +445,17 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     const canvas = canvasRef.current
     if (!canvas) return
     const rect = canvas.getBoundingClientRect()
-    mouse.current = { px: e.clientX - rect.left, py: e.clientY - rect.top }
+    const px = e.clientX - rect.left
+    const py = e.clientY - rect.top
+    mouse.current = { px, py }
     if (drag.current) {
       view.current.cx = drag.current.cx - (e.clientX - drag.current.x) / view.current.scale
       view.current.cy = drag.current.cy + (e.clientY - drag.current.y) / view.current.scale
     }
+    const { cx, cy, scale } = view.current
+    const wx = cx + (px - rect.width / 2) / scale
+    const wy = cy - (py - rect.height / 2) / scale
+    setMouseCoords({ x: wx, y: wy })
     draw()
   }
 
@@ -461,8 +474,11 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
 
           // 1. Check if clicking a visible node
           const NODE_HIT = 10
-          const nodeHit = intersectionsRef.current.findIndex((pt, idx) => {
-            const belongsToVisible = [...pt.curves].every(c => visibleCurves.current.has(c))
+          const nodeHit = intersectionsRef.current.findIndex((pt) => {
+            const curves = [...pt.curves]
+            const belongsToVisible = pt.axisNode
+              ? curves.some(c => visibleCurves.current.has(c))
+              : curves.every(c => visibleCurves.current.has(c))
             return belongsToVisible && Math.hypot(toX(pt.x) - px, toY(pt.y) - py) < NODE_HIT
           })
           if (nodeHit >= 0) {
@@ -473,23 +489,29 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
             return
           }
 
-          // 2. Check if clicking a curve — toggle its nodes
-          const CURVE_HIT = 6
+          // 2. Check if clicking a curve — use the same snap threshold as the crosshair
           const wx = cx + (px - rect.width / 2) / scale
-          const curveHit = plotFnsRef.current.findIndex(fn => {
-            if (!fn) return false
+          let curveHit = -1
+          let bestDist = SNAP_PX
+          plotFnsRef.current.forEach((fn, i) => {
+            if (!fn) return
             const fy = fn(wx)
-            if (!isFinite(fy)) return false
-            return Math.abs(toY(fy) - py) < CURVE_HIT
+            if (!isFinite(fy)) return
+            const dist = Math.abs(toY(fy) - py)
+            if (dist < bestDist) { bestDist = dist; curveHit = i }
           })
           if (curveHit >= 0) {
             if (visibleCurves.current.has(curveHit)) visibleCurves.current.delete(curveHit)
             else visibleCurves.current.add(curveHit)
-            // Clear active node if it no longer belongs to a visible curve
+            // Clear active nodes that are no longer visible under the new toggle state
             for (const idx of [...activeNode.current]) {
               const pt = intersectionsRef.current[idx]
-              if (pt && ![...pt.curves].every(c => visibleCurves.current.has(c)))
-                activeNode.current.delete(idx)
+              if (!pt) { activeNode.current.delete(idx); continue }
+              const curves = [...pt.curves]
+              const stillVisible = pt.axisNode
+                ? curves.some(c => visibleCurves.current.has(c))
+                : curves.every(c => visibleCurves.current.has(c))
+              if (!stillVisible) activeNode.current.delete(idx)
             }
             onCurveClick(curveHit)
             draw()
@@ -508,6 +530,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
   function handleMouseLeave() {
     drag.current = null
     mouse.current = null
+    setMouseCoords(null)
     draw()
   }
 
@@ -521,14 +544,21 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
       />
+      {/* Cursor coordinates */}
+      {mouseCoords && (
+        <div style={{
+          position: 'absolute', top: '12px', left: '14px',
+          background: 'rgba(255,255,255,0.9)', border: '1px solid #ddd',
+          borderRadius: '6px', padding: '4px 8px',
+          fontSize: '11px', fontFamily: 'ui-monospace, Consolas, monospace',
+          color: '#555', pointerEvents: 'none',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+        }}>
+          ({formatLabel(mouseCoords.x)}, {formatLabel(mouseCoords.y)})
+        </div>
+      )}
       {/* Top-right controls */}
       <div style={{ position: 'absolute', top: '12px', right: '14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-        <button onClick={() => {}} style={ICON_BTN_STYLE} title="Settings">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
         <button onClick={handleResetView} style={ICON_BTN_STYLE} title="Reset view">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>

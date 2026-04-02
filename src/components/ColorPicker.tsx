@@ -32,14 +32,6 @@ function hsvToHex(h: number, s: number, v: number): string {
   return `#${toHex(f(5))}${toHex(f(3))}${toHex(f(1))}`
 }
 
-function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
-  const f = (n: number) => {
-    const k = (n + h / 60) % 6
-    return v - v * s * Math.max(0, Math.min(k, 4 - k, 1))
-  }
-  return [Math.round(f(5) * 255), Math.round(f(3) * 255), Math.round(f(1) * 255)]
-}
-
 const SQ = 160  // square size
 const HUE_H = 12 // hue slider height
 
@@ -152,7 +144,6 @@ export default function ColorPicker({ color, onChange, onClose, anchorPos }: Pro
     return () => { clearTimeout(t); window.removeEventListener('mousedown', onDown) }
   }, [])
 
-  const [r, g, b] = hsvToRgb(...hsv)
   const hex = hsvToHex(...hsv)
 
   return (
@@ -164,13 +155,13 @@ export default function ColorPicker({ color, onChange, onClose, anchorPos }: Pro
         background: '#fff', border: '1px solid #ddd', borderRadius: '8px',
         boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
         display: 'flex', flexDirection: 'column',
-        overflow: 'hidden', width: `${SQ}px`,
+        width: `${SQ}px`, boxSizing: 'border-box',
       }}
     >
       {/* SV square */}
       <canvas
         ref={sqRef} width={SQ} height={SQ}
-        style={{ display: 'block', cursor: 'crosshair' }}
+        style={{ display: 'block', cursor: 'crosshair', width: SQ, height: SQ }}
         onMouseDown={() => { draggingSq.current = true }}
       />
 
@@ -199,13 +190,19 @@ export default function ColorPicker({ color, onChange, onClose, anchorPos }: Pro
           />
         </div>
 
-        {/* RGB readout */}
+        {/* Preset swatches */}
         <div style={{ display: 'flex', gap: '6px' }}>
-          {[['R', r], ['G', g], ['B', b]].map(([label, val]) => (
-            <div key={label as string} style={{ flex: 1, textAlign: 'center' }}>
-              <div style={{ border: '1px solid #ddd', borderRadius: '4px', padding: '3px', fontSize: '0.8rem', fontFamily: 'monospace' }}>{val}</div>
-              <div style={{ fontSize: '0.7rem', color: '#888', marginTop: '2px' }}>{label}</div>
-            </div>
+          {['#b71c1c', '#e37400', '#188038', '#1a73e8', '#a142f4', '#111111'].map((c) => (
+            <div
+              key={c}
+              onClick={() => { const next = hexToHsv(c); setHsv(next); onChangeRef.current(c) }}
+              style={{
+                width: '18px', height: '18px', borderRadius: '50%', background: c,
+                cursor: 'pointer', flexShrink: 0,
+                border: hex === c ? '2px solid #111' : '2px solid transparent',
+                boxSizing: 'border-box',
+              }}
+            />
           ))}
         </div>
       </div>
