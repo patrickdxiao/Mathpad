@@ -117,6 +117,9 @@ export default function Notebook() {
   const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0].id)
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [projectName, setProjectName] = useState('Untitled')
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleValue, setTitleValue] = useState('Untitled')
   const [panelWidth, setPanelWidth] = useState(400)
   const cellRefs = useRef<Map<string, CellHandle>>(new Map())
 
@@ -245,6 +248,44 @@ export default function Notebook() {
     }
   }, [cells.length, activeTab.id])
 
+  function handleSave() {
+    const json = JSON.stringify({ projectName, tabs }, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${projectName}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const loadInputRef = useRef<HTMLInputElement>(null)
+
+  function handleLoad(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target?.result as string)
+        if (!Array.isArray(parsed.tabs)) return
+        const loadedTabs: TabData[] = parsed.tabs
+        const base: Record<string, unknown> = {}
+        const recomputed = loadedTabs.map((tab) => ({
+          ...tab,
+          cells: recomputeAll(tab.cells, base),
+        }))
+        setTabs(recomputed)
+        setActiveTabId(recomputed[0].id)
+        const name = parsed.projectName ?? 'Untitled'
+        setProjectName(name)
+        setTitleValue(name)
+      } catch { /* invalid file — silently ignore */ }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
   function getCellStyle(index: number): React.CSSProperties {
     if (!drag) return {}
     const { dragIndex, startY, currentY, cellHeight } = drag
@@ -304,8 +345,47 @@ export default function Notebook() {
       <div style={{ width: `${panelWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', background: '#fff', borderLeft: '1px solid #111', borderRight: '1px solid #111' }}>
 
         {/* Header */}
-        <div style={{ background: '#1e1b4b', padding: '0.6rem 0.5rem', flexShrink: 0 }}>
-          <h1 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0, textAlign: 'center', color: '#fff' }}>MathPad</h1>
+        <div style={{ background: '#1e1b4b', padding: '0.5rem 0.75rem', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          {editingTitle ? (
+            <input
+              autoFocus
+              value={titleValue}
+              onChange={(e) => setTitleValue(e.target.value)}
+              onBlur={() => { const v = titleValue.trim() || 'Untitled'; setProjectName(v); setTitleValue(v); setEditingTitle(false) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { const v = titleValue.trim() || 'Untitled'; setProjectName(v); setTitleValue(v); setEditingTitle(false) }
+                if (e.key === 'Escape') { setTitleValue(projectName); setEditingTitle(false) }
+              }}
+              style={{
+                background: 'transparent', border: 'none', borderBottom: '1px solid rgba(255,255,255,0.5)',
+                color: '#fff', fontSize: '1.1rem', fontWeight: 700, outline: 'none',
+                width: '160px', fontFamily: 'inherit',
+              }}
+            />
+          ) : (
+            <h1
+              onClick={() => { setTitleValue(projectName); setEditingTitle(true) }}
+              title="Click to rename"
+              style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0, color: '#fff', cursor: 'text' }}
+            >{projectName}</h1>
+          )}
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button onClick={handleSave} title="Save to file" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.7)', padding: '2px', lineHeight: 1, display: 'flex', alignItems: 'center' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+            </button>
+            <button onClick={() => loadInputRef.current?.click()} title="Load from file" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.7)', padding: '2px', lineHeight: 1, display: 'flex', alignItems: 'center' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </button>
+            <input ref={loadInputRef} type="file" accept=".json" onChange={handleLoad} style={{ display: 'none' }} />
+          </div>
         </div>
 
         {/* Tab bar */}
