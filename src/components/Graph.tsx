@@ -16,7 +16,9 @@ function formatLabel(n: number): string {
 
 interface GraphProps {
   expressions: string[]
+  colors: string[]
   scope: Record<string, unknown>
+  onCurveClick: (index: number) => void
 }
 
 function niceInterval(rawInterval: number): number {
@@ -106,14 +108,14 @@ const ICON_BTN_STYLE: React.CSSProperties = {
   boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
 }
 
-export default function Graph({ expressions, scope }: GraphProps) {
+export default function Graph({ expressions, colors, scope, onCurveClick }: GraphProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const view = useRef({ cx: 0, cy: 0, scale: 50 })
   const drag = useRef<{ x: number; y: number; cx: number; cy: number } | null>(null)
   const size = useRef({ w: 0, h: 0 })
   const mouse = useRef<{ px: number; py: number } | null>(null)
   // Which intersection node is currently showing its label (index into allIntersections)
-  const activeNode = useRef<number | null>(null)
+  const activeNode = useRef<Set<number>>(new Set())
   // Which curve indices have their nodes visible
   const visibleCurves = useRef<Set<number>>(new Set())
   // Cached intersections and plot functions so click handler can use them
@@ -212,7 +214,7 @@ export default function Graph({ expressions, scope }: GraphProps) {
 
     // Plot each expression
     expressions.forEach((expr, i) => {
-      ctx.strokeStyle = COLORS[i % COLORS.length]
+      ctx.strokeStyle = colors[i] ?? COLORS[i % COLORS.length]
       ctx.lineWidth = 2
       ctx.lineJoin = 'round'
       ctx.lineCap = 'round'
@@ -257,7 +259,9 @@ export default function Graph({ expressions, scope }: GraphProps) {
 
     plotFns.forEach((fn, i) => {
       if (!fn) return
-      findIntersections(fn, zero, xMin, xMax, steps).forEach(pt => addPt(pt, i))
+      // x-axis intersections (roots)
+      findIntersections(fn, zero, xMin, xMax, steps).forEach(pt => addPt({ x: pt.x, y: 0 }, i))
+      // y-axis crossing (x = 0)
       if (xMin <= 0 && xMax >= 0) {
         const y0val = fn(0)
         if (isFinite(y0val)) addPt({ x: 0, y: y0val }, i)
@@ -274,11 +278,11 @@ export default function Graph({ expressions, scope }: GraphProps) {
 
     // Draw nodes — only for curves that are toggled visible
     allIntersections.forEach((pt, idx) => {
-      const belongsToVisible = [...pt.curves].some(c => visibleCurves.current.has(c))
+      const belongsToVisible = [...pt.curves].every(c => visibleCurves.current.has(c))
       if (!belongsToVisible) return
 
       const px = toX(pt.x), py = toY(pt.y)
-      const isActive = activeNode.current === idx
+      const isActive = activeNode.current.has(idx)
 
       ctx.beginPath()
       ctx.arc(px, py, isActive ? 5 : 4, 0, Math.PI * 2)
@@ -336,9 +340,10 @@ export default function Graph({ expressions, scope }: GraphProps) {
         if (dist < bestDist) { bestDist = dist; snapY = fy; snapPy = candidatePy }
       })
 
-      const displayY = snapY !== null ? snapY : cy - (py - h / 2) / scale
+      if (snapY === null) return
+
       const displayPy = snapPy
-      const label = `(${formatLabel(wx)}, ${formatLabel(displayY)})`
+      const label = `(${formatLabel(wx)}, ${formatLabel(snapY)})`
 
       ctx.strokeStyle = 'rgba(0,0,0,0.2)'
       ctx.lineWidth = 1
@@ -347,19 +352,17 @@ export default function Graph({ expressions, scope }: GraphProps) {
       ctx.beginPath(); ctx.moveTo(0, displayPy); ctx.lineTo(w, displayPy); ctx.stroke()
       ctx.setLineDash([])
 
-      if (snapY !== null) {
-        ctx.fillStyle = '#111'
-        ctx.beginPath()
-        ctx.arc(px, displayPy, 3.5, 0, Math.PI * 2)
-        ctx.fill()
-      }
+      ctx.fillStyle = '#111'
+      ctx.beginPath()
+      ctx.arc(px, displayPy, 3.5, 0, Math.PI * 2)
+      ctx.fill()
 
       ctx.font = '11px system-ui, sans-serif'
       const tw = ctx.measureText(label).width
       const lx = px + 10 + tw + 6 > w ? px - tw - 14 : px + 10
       const ly = displayPy - 20 < 0 ? displayPy + 8 : displayPy - 20
 
-      ctx.fillStyle = snapY !== null ? 'rgba(0,0,0,0.75)' : 'rgba(0,0,0,0.65)'
+      ctx.fillStyle = 'rgba(0,0,0,0.75)'
       ctx.beginPath()
       ctx.roundRect(lx - 4, ly - 2, tw + 8, 18, 3)
       ctx.fill()
@@ -368,7 +371,7 @@ export default function Graph({ expressions, scope }: GraphProps) {
       ctx.textBaseline = 'top'
       ctx.fillText(label, lx, ly)
     }
-  }, [expressions, scope])
+  }, [expressions, colors, scope])
 
   // Handle canvas sizing with devicePixelRatio for sharp rendering
   useEffect(() => {
@@ -386,11 +389,22 @@ export default function Graph({ expressions, scope }: GraphProps) {
     return () => observer.disconnect()
   }, [draw])
 
-  // Reset node state only when the set of expressions actually changes
+  // Reset node state only when the set of expressions actually changes (compare by content)
+  const prevExpressionsRef = useRef<string>('')
+  const expressionsKey = expressions.join('|')
   useEffect(() => {
-    visibleCurves.current = new Set()
-    activeNode.current = null
-  }, [expressions])
+    if (expressionsKey === prevExpressionsRef.current) return
+    // Only reset curves that no longer exist
+    const newCount = expressions.length
+    visibleCurves.current = new Set([...visibleCurves.current].filter(i => i < newCount))
+    for (const idx of [...activeNode.current]) {
+      const pt = intersectionsRef.current[idx]
+      if (!pt || ![...pt.curves].every(c => visibleCurves.current.has(c))) {
+        activeNode.current.delete(idx)
+      }
+    }
+    prevExpressionsRef.current = expressionsKey
+  }, [expressionsKey])
 
   // Redraw whenever the draw function updates (expressions, scope, or view changes)
   useEffect(() => { draw() }, [draw])
@@ -448,11 +462,12 @@ export default function Graph({ expressions, scope }: GraphProps) {
           // 1. Check if clicking a visible node
           const NODE_HIT = 10
           const nodeHit = intersectionsRef.current.findIndex((pt, idx) => {
-            const belongsToVisible = [...pt.curves].some(c => visibleCurves.current.has(c))
+            const belongsToVisible = [...pt.curves].every(c => visibleCurves.current.has(c))
             return belongsToVisible && Math.hypot(toX(pt.x) - px, toY(pt.y) - py) < NODE_HIT
           })
           if (nodeHit >= 0) {
-            activeNode.current = nodeHit === activeNode.current ? null : nodeHit
+            if (activeNode.current.has(nodeHit)) activeNode.current.delete(nodeHit)
+            else activeNode.current.add(nodeHit)
             draw()
             drag.current = null
             return
@@ -471,11 +486,12 @@ export default function Graph({ expressions, scope }: GraphProps) {
             if (visibleCurves.current.has(curveHit)) visibleCurves.current.delete(curveHit)
             else visibleCurves.current.add(curveHit)
             // Clear active node if it no longer belongs to a visible curve
-            if (activeNode.current !== null) {
-              const pt = intersectionsRef.current[activeNode.current]
-              if (pt && ![...pt.curves].some(c => visibleCurves.current.has(c)))
-                activeNode.current = null
+            for (const idx of [...activeNode.current]) {
+              const pt = intersectionsRef.current[idx]
+              if (pt && ![...pt.curves].every(c => visibleCurves.current.has(c)))
+                activeNode.current.delete(idx)
             }
+            onCurveClick(curveHit)
             draw()
           }
         }

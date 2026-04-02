@@ -4,4 +4,12 @@ export interface CellData {
   output: string | null
   error: string | null
   graphEnabled: boolean
+  graphVisible: boolean
+  color: string
+}
+
+export interface TabData {
+  id: string
+  label: string
+  cells: CellData[]
 }

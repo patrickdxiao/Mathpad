@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 're
 import 'mathlive'
 import type { MathfieldElement } from 'mathlive'
 import type { CellData } from '../types'
+import ColorPicker from './ColorPicker'
 
 // Tell TypeScript that <math-field> is a valid JSX element
 declare global {
@@ -20,11 +21,14 @@ interface CellProps {
   onEnter: (id: string) => void
   onDelete: (id: string) => void
   onDragStart: (index: number, clientY: number, cellHeight: number) => void
+  onToggleVisible: (id: string) => void
+  onColorChange: (id: string, color: string) => void
 }
+
 
 export interface CellHandle { focus: () => void }
 
-export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, style, onUpdate, onEnter, onDelete, onDragStart }, ref) {
+export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, style, onUpdate, onEnter, onDelete, onDragStart, onToggleVisible, onColorChange }, ref) {
   const mathfieldRef = useRef<MathfieldElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
 
@@ -35,6 +39,8 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
   const [hovering, setHovering] = useState(false)
   const [showTooltip, setShowTooltip] = useState(false)
   const [tooltipPos, setTooltipPos] = useState<{ top: number; right: number } | null>(null)
+  const [showColorPicker, setShowColorPicker] = useState(false)
+  const [pickerPos, setPickerPos] = useState<{ top: number; left: number } | null>(null)
   const errorRef = useRef<HTMLDivElement>(null)
 
   // Sync value into the math-field when it changes externally (e.g. cell reorder)
@@ -52,8 +58,6 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
     if (!mf) return
     mf.mathVirtualKeyboardPolicy = 'manual'
     mf.letterShapeStyle = 'upright'
-    // Disable all inline shortcuts so plain text like "sin" is treated as a
-    // user variable, not auto-expanded. Backslash commands (\sin, \frac) still work.
     mf.inlineShortcuts = {}
 
     function handleInput() {
@@ -85,21 +89,52 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >
-      {/* Drag handle */}
+      {/* Drag handle + color picker */}
       <div
         onMouseDown={(e) => {
-          e.preventDefault() // prevent text selection while dragging
+          if ((e.target as HTMLElement).closest('[data-colorwheel]')) return
+          e.preventDefault()
           const height = rowRef.current?.getBoundingClientRect().height ?? 40
           onDragStart(index, e.clientY, height)
         }}
         style={{
           width: '1.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          flexShrink: 0, cursor: 'grab', color: (hovering || focused) ? '#aaa' : 'transparent',
-          fontSize: '0.75rem', userSelect: 'none',
+          flexShrink: 0, cursor: 'grab', userSelect: 'none',
           background: (hovering || focused) ? '#1e1b4b' : 'transparent',
-          transition: 'background 0.15s',
+          transition: 'background 0.15s', position: 'relative',
         }}
-      >⠿</div>
+      >
+        {cell.graphEnabled ? (
+          (hovering || focused) ? (
+            <div
+              data-colorwheel
+              onClick={(e) => {
+                e.stopPropagation()
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                setPickerPos({ top: rect.bottom + 4, left: rect.left })
+                setShowColorPicker((v) => !v)
+              }}
+              style={{
+                width: '14px', height: '14px', borderRadius: '50%', cursor: 'pointer',
+                background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+              }}
+            />
+          ) : (
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: cell.color, opacity: 0.7 }} />
+          )
+        ) : (
+          <span style={{ color: (hovering || focused) ? '#aaa' : 'transparent', fontSize: '0.75rem' }}>⠿</span>
+        )}
+      </div>
+
+      {showColorPicker && pickerPos && cell.graphEnabled && (
+        <ColorPicker
+          color={cell.color}
+          onChange={(c) => onColorChange(cell.id, c)}
+          onClose={() => setShowColorPicker(false)}
+          anchorPos={pickerPos}
+        />
+      )}
 
       {/* Input + output row */}
       <div style={{
@@ -153,14 +188,42 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
         ) : null}
       </div>
 
-      {/* Delete button */}
+      {/* Right side: visibility toggle (if graphable) + delete */}
       <div style={{
-        width: '1.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexShrink: 0, opacity: hovering ? 1 : 0, transition: 'opacity 0.1s',
+        display: 'flex', alignItems: 'center', flexShrink: 0,
+        opacity: (hovering || !cell.graphVisible) ? 1 : 0,
+        transition: 'opacity 0.1s',
       }}>
+        {cell.graphEnabled && (
+          <button
+            onClick={() => onToggleVisible(cell.id)}
+            title={cell.graphVisible ? 'Hide from graph' : 'Show on graph'}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer', padding: '0.1rem 0.2rem',
+              color: cell.graphVisible ? '#1e1b4b' : '#ccc', fontSize: '0.85rem', lineHeight: 1,
+            }}
+          >
+            {cell.graphVisible ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                <line x1="1" y1="1" x2="23" y2="23"/>
+              </svg>
+            )}
+          </button>
+        )}
         <button
           onClick={() => onDelete(cell.id)}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#aaa', fontSize: '1.1rem', lineHeight: 1, padding: '0.1rem 0.2rem' }}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer', color: '#aaa',
+            fontSize: '1.1rem', lineHeight: 1, padding: '0.1rem 0.3rem',
+            opacity: hovering ? 1 : 0, transition: 'opacity 0.1s',
+          }}
         >×</button>
       </div>
     </div>
