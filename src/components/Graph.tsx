@@ -403,7 +403,7 @@ export default function Graph({ expressions, scope }: GraphProps) {
       e.preventDefault()
       const { cx, cy, scale } = view.current
       const { w, h } = size.current
-      const factor = e.deltaY > 0 ? 1 / 1.1 : 1.1
+      const factor = e.deltaY > 0 ? 1 / 1.05 : 1.05
       const newScale = scale * factor
       const mouseX = cx + (e.offsetX - w / 2) / scale
       const mouseY = cy - (e.offsetY - h / 2) / scale
