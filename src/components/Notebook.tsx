@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import Cell from './Cell'
+import Cell, { type CellHandle } from './Cell'
 import Graph from './Graph'
 import type { CellData } from '../types'
 import { evaluateCell, isGraphable, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS } from '../lib/mathScope'
@@ -8,7 +8,22 @@ function makeCell(): CellData {
   return { id: crypto.randomUUID(), input: '', output: null, error: null, graphEnabled: false }
 }
 
+// Returns the variable name being assigned, or null if not an assignment
+function getAssignedVar(latex: string): string | null {
+  const mathInput = latexToMathjs(latex).trim()
+  const m = mathInput.match(/^([a-zA-Z_\u0080-\uFFFF][a-zA-Z0-9_\u0080-\uFFFF]*)\s*=/)
+  return m ? m[1] : null
+}
+
 function recomputeAll(cells: CellData[]): CellData[] {
+  // Find all variables assigned more than once
+  const assignCounts = new Map<string, number>()
+  cells.forEach((cell) => {
+    const v = getAssignedVar(cell.input)
+    if (v) assignCounts.set(v, (assignCounts.get(v) ?? 0) + 1)
+  })
+  const duplicates = new Set([...assignCounts.entries()].filter(([, n]) => n > 1).map(([v]) => v))
+
   const fullScope: Record<string, unknown> = { ...UNICODE_CONSTANTS }
   // Two passes so later cells can reference variables defined in earlier cells
   for (let pass = 0; pass < 2; pass++) {
@@ -16,6 +31,8 @@ function recomputeAll(cells: CellData[]): CellData[] {
       if (!cell.input.trim()) return
       const mathInput = latexToMathjs(cell.input).trim()
       if (/^[xy]\s*=/.test(mathInput)) return
+      const v = getAssignedVar(cell.input)
+      if (v && duplicates.has(v)) return // don't write duplicate vars to scope
       try { evaluateCell(cell.input, fullScope) } catch { /* skip */ }
     })
   }
@@ -23,6 +40,11 @@ function recomputeAll(cells: CellData[]): CellData[] {
   return cells.map((cell) => {
     const mathInput = latexToMathjs(cell.input)
     if (!mathInput.trim()) return { ...cell, output: null, error: null, graphEnabled: false }
+
+    const assignedVar = getAssignedVar(cell.input)
+    if (assignedVar && duplicates.has(assignedVar)) {
+      return { ...cell, output: null, error: `'${assignedVar}' is defined more than once`, graphEnabled: false }
+    }
 
     const graphEnabled = isGraphable(cell.input, fullScope)
     const hasUndefined = hasUndefinedSymbols(cell.input, fullScope)
@@ -49,6 +71,7 @@ interface DragState {
 export default function Notebook() {
   const [cells, setCells] = useState<CellData[]>([makeCell()])
   const [panelWidth, setPanelWidth] = useState(400)
+  const cellRefs = useRef<Map<string, CellHandle>>(new Map())
 
   // Drag state — stored in state so Cell components re-render with updated transforms
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -65,9 +88,12 @@ export default function Notebook() {
 
   function handleEnter(id: string) {
     const idx = cells.findIndex((c) => c.id === id)
+    const newCell = makeCell()
     const next = [...cells]
-    next.splice(idx + 1, 0, makeCell())
+    next.splice(idx + 1, 0, newCell)
     setCells(next)
+    // Focus the new cell after React renders it
+    setTimeout(() => cellRefs.current.get(newCell.id)?.focus(), 0)
   }
 
   function handleDelete(id: string) {
@@ -87,7 +113,7 @@ export default function Notebook() {
       // Panel resize
       if (resizing.current) {
         const delta = e.clientX - resizeStartX.current
-        setPanelWidth(Math.max(200, Math.min(800, resizeStartWidth.current + delta)))
+        setPanelWidth(Math.max(0, Math.min(window.innerWidth, resizeStartWidth.current + delta)))
         return
       }
 
@@ -173,13 +199,17 @@ export default function Notebook() {
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       {/* Notebook panel */}
       <div style={{ width: `${panelWidth}px`, flexShrink: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', background: '#fff', borderLeft: '1px solid #111', borderRight: '1px solid #111' }}>
-        <div style={{ padding: '1rem 0.5rem 0.5rem 0.5rem' }}>
-          <h1 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '0.75rem', marginTop: 0, paddingLeft: '2rem' }}>MathPad</h1>
+        <div style={{ background: '#1e1b4b', padding: '0.6rem 0.5rem' }}>
+          <h1 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0, textAlign: 'center', color: '#fff' }}>MathPad</h1>
         </div>
         <div style={{ flex: 1, borderTop: '1px solid #111' }}>
           {cells.map((cell, i) => (
             <Cell
               key={cell.id}
+              ref={(handle) => {
+                if (handle) cellRefs.current.set(cell.id, handle)
+                else cellRefs.current.delete(cell.id)
+              }}
               cell={cell}
               index={i}
               style={getCellStyle(i)}
@@ -193,16 +223,19 @@ export default function Notebook() {
       </div>
 
       {/* Resize handle */}
-      <div
-        style={{ width: '4px', cursor: 'col-resize', background: '#e5e5e5', flexShrink: 0, transition: 'background 0.15s' }}
-        onMouseDown={(e) => {
-          resizing.current = true
-          resizeStartX.current = e.clientX
-          resizeStartWidth.current = panelWidth
-        }}
-        onMouseEnter={(e) => { (e.target as HTMLElement).style.background = '#bbb' }}
-        onMouseLeave={(e) => { (e.target as HTMLElement).style.background = '#e5e5e5' }}
-      />
+      <div style={{ width: '12px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div
+          onMouseDown={(e) => {
+            resizing.current = true
+            resizeStartX.current = e.clientX
+            resizeStartWidth.current = panelWidth
+          }}
+          style={{
+            width: '3px', height: '48px', borderRadius: '2px',
+            background: '#1e1b4b', cursor: 'col-resize', transition: 'background 0.15s',
+          }}
+        />
+      </div>
 
       {/* Graph panel */}
       <div style={{ flex: 1, minWidth: 0, height: '100vh' }}>

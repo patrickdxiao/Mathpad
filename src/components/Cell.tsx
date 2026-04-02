@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 'react'
 import 'mathlive'
 import type { MathfieldElement } from 'mathlive'
 import type { CellData } from '../types'
@@ -22,12 +22,20 @@ interface CellProps {
   onDragStart: (index: number, clientY: number, cellHeight: number) => void
 }
 
-export default function Cell({ cell, index, style, onUpdate, onEnter, onDelete, onDragStart }: CellProps) {
+export interface CellHandle { focus: () => void }
+
+export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, style, onUpdate, onEnter, onDelete, onDragStart }, ref) {
   const mathfieldRef = useRef<MathfieldElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
+
+  useImperativeHandle(ref, () => ({
+    focus: () => mathfieldRef.current?.focus(),
+  }))
   const [focused, setFocused] = useState(false)
   const [hovering, setHovering] = useState(false)
   const [showTooltip, setShowTooltip] = useState(false)
+  const [tooltipPos, setTooltipPos] = useState<{ top: number; right: number } | null>(null)
+  const errorRef = useRef<HTMLDivElement>(null)
 
   // Sync value into the math-field when it changes externally (e.g. cell reorder)
   useEffect(() => {
@@ -43,6 +51,7 @@ export default function Cell({ cell, index, style, onUpdate, onEnter, onDelete, 
     const mf = mathfieldRef.current
     if (!mf) return
     mf.mathVirtualKeyboardPolicy = 'manual'
+    mf.letterShapeStyle = 'upright'
     // Disable all inline shortcuts so plain text like "sin" is treated as a
     // user variable, not auto-expanded. Backslash commands (\sin, \frac) still work.
     mf.inlineShortcuts = {}
@@ -85,15 +94,17 @@ export default function Cell({ cell, index, style, onUpdate, onEnter, onDelete, 
         }}
         style={{
           width: '1.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          flexShrink: 0, cursor: 'grab', color: hovering ? '#bbb' : 'transparent',
+          flexShrink: 0, cursor: 'grab', color: (hovering || focused) ? '#aaa' : 'transparent',
           fontSize: '0.75rem', userSelect: 'none',
+          background: (hovering || focused) ? '#1e1b4b' : 'transparent',
+          transition: 'background 0.15s',
         }}
       >⠿</div>
 
       {/* Input + output row */}
       <div style={{
         flex: 1, display: 'flex', alignItems: 'center',
-        borderLeft: focused ? '2px solid #1a73e8' : '2px solid transparent',
+        borderLeft: '2px solid transparent',
         padding: '0.35rem 0', minHeight: '2.2rem', overflow: 'hidden',
       }}>
         <math-field
@@ -112,16 +123,25 @@ export default function Cell({ cell, index, style, onUpdate, onEnter, onDelete, 
 
         {cell.error ? (
           <div
+            ref={errorRef}
             style={{ position: 'relative', marginLeft: '0.75rem', flexShrink: 0 }}
-            onMouseEnter={() => setShowTooltip(true)}
+            onMouseEnter={() => {
+              const rect = errorRef.current?.getBoundingClientRect()
+              if (rect) setTooltipPos({ top: rect.top - 8, right: window.innerWidth - rect.right })
+              setShowTooltip(true)
+            }}
             onMouseLeave={() => setShowTooltip(false)}
           >
             <span style={{ color: '#e53e3e', cursor: 'help' }}>⚠</span>
-            {showTooltip && (
+            {showTooltip && tooltipPos && (
               <div style={{
-                position: 'absolute', bottom: '130%', right: 0, background: '#333', color: '#fff',
+                position: 'fixed',
+                top: tooltipPos.top,
+                right: tooltipPos.right,
+                transform: 'translateY(-100%)',
+                background: '#333', color: '#fff',
                 padding: '0.3rem 0.6rem', borderRadius: '4px', fontSize: '0.75rem',
-                whiteSpace: 'nowrap', zIndex: 10, pointerEvents: 'none',
+                whiteSpace: 'nowrap', zIndex: 1000, pointerEvents: 'none',
               }}>{cell.error}</div>
             )}
           </div>
@@ -145,4 +165,4 @@ export default function Cell({ cell, index, style, onUpdate, onEnter, onDelete, 
       </div>
     </div>
   )
-}
+})

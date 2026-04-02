@@ -57,6 +57,9 @@ export function latexToMathjs(latex: string): string {
     s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)')
   }
 
+  // Unicode math italic x/y (used by MathLive macro rendering) → plain x/y for evaluation
+  s = s.replace(/𝑥/g, 'x')
+  s = s.replace(/𝑦/g, 'y')
   s = s.replace(/\\cdot/g, '*')
   s = s.replace(/\\times/g, '*')
   s = s.replace(/\\div/g, '/')
@@ -107,7 +110,11 @@ export function evaluateCell(
 
   try {
     const result = math.evaluate(latexToMathjs(input), customScope)
-    return { result: result !== undefined ? String(result) : '', error: null }
+    if (result === undefined) return { result: '', error: null }
+    const formatted = typeof result === 'number'
+      ? parseFloat(result.toPrecision(14)).toString()
+      : String(result)
+    return { result: formatted, error: null }
   } catch (e) {
     return { result: '', error: (e as Error).message }
   }
@@ -147,8 +154,15 @@ export function isGraphable(input: string, scope: Record<string, unknown>): bool
     node.traverse((n: any) => {
       if (n.type === 'SymbolNode') symbols.add(n.name)
     })
-    const graphVars = [...symbols].filter((s) => s === 'x' || s === 'y')
-    return !hasUndefinedSymbols(input, scope) && graphVars.length > 0
+    const hasX = symbols.has('x')
+    const hasY = symbols.has('y')
+
+    // y = f(x): assignment to y — graphable as a curve
+    if (node.type === 'AssignmentNode' && (node as any).name === 'y') return !hasUndefinedSymbols(input, scope)
+    // f(x): expression containing x — graphable as y = f(x)
+    if (hasX) return !hasUndefinedSymbols(input, scope)
+    // bare y or y in expression without x — not a curve we can plot
+    return false
   } catch {
     return false
   }
