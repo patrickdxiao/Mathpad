@@ -155,7 +155,6 @@ export function isGraphable(input: string, scope: Record<string, unknown>): bool
       if (n.type === 'SymbolNode') symbols.add(n.name)
     })
     const hasX = symbols.has('x')
-    const hasY = symbols.has('y')
 
     // y = f(x): assignment to y — graphable as a curve
     if (node.type === 'AssignmentNode' && (node as any).name === 'y') return !hasUndefinedSymbols(input, scope)

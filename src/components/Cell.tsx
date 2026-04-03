@@ -4,14 +4,6 @@ import type { MathfieldElement } from 'mathlive'
 import type { CellData } from '../types'
 import ColorPicker from './ColorPicker'
 
-// Tell TypeScript that <math-field> is a valid JSX element
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      'math-field': React.DetailedHTMLProps<React.HTMLAttributes<MathfieldElement>, MathfieldElement>
-    }
-  }
-}
 
 interface CellProps {
   cell: CellData
@@ -47,7 +39,7 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
     const mf = mathfieldRef.current
     if (!mf) return
     if (mf.getValue() !== cell.input) {
-      mf.setValue(cell.input, { suppressChangeNotifications: true })
+      mf.setValue(cell.input, { silenceNotifications: true } as any)
     }
   }, [cell.input])
 
@@ -141,6 +133,7 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
         borderLeft: '2px solid transparent',
         padding: '0.35rem 0', minHeight: '2.2rem', overflow: 'hidden',
       }}>
+        {/* @ts-expect-error math-field is a custom element registered by mathlive */}
         <math-field
           ref={mathfieldRef}
           onFocus={() => setFocused(true)}
