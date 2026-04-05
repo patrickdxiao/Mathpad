@@ -31,9 +31,11 @@ function defaultBounds(value: number): SliderConfig {
   if (value === 0) return { min: -10, max: 10, visible: true }
   const abs = Math.abs(value)
   const magnitude = Math.pow(10, Math.floor(Math.log10(abs)))
-  const rounded = Math.ceil(abs / magnitude) * magnitude * 2
-  if (value >= 0) return { min: 0, max: rounded, visible: true }
-  return { min: -rounded, max: 0, visible: true }
+  const raw = Math.ceil(abs / magnitude) * magnitude * 2
+  // Round to 1 decimal if fractional, else integer — avoids floating point noise like 1.2000000000000002
+  const bound = Number.isInteger(raw) ? raw : Math.round(raw * 10) / 10
+  if (value >= 0) return { min: 0, max: bound, visible: true }
+  return { min: -bound, max: 0, visible: true }
 }
 
 function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}): CellData[] {
@@ -202,7 +204,7 @@ export default function Notebook() {
     const varName = getAssignedVar(cell.input)
     if (!varName) return
     // Format cleanly — avoid floating point noise like 1.0000000000001
-    const formatted = parseFloat(value.toPrecision(10)).toString()
+    const formatted = parseFloat(value.toPrecision(4)).toString()
     const newInput = `${varName}=${formatted}`
     const updated = cells.map((c) => c.id === id ? { ...c, input: newInput } : c)
     setTabs((prev) => recomputeAllTabs(prev, activeTab.id, updated))
@@ -319,11 +321,7 @@ export default function Notebook() {
         const parsed = JSON.parse(ev.target?.result as string)
         if (!Array.isArray(parsed.tabs)) return
         const loadedTabs: TabData[] = parsed.tabs
-        const base: Record<string, unknown> = {}
-        const recomputed = loadedTabs.map((tab) => ({
-          ...tab,
-          cells: recomputeAll(tab.cells, base),
-        }))
+        const recomputed = recomputeAllTabs(loadedTabs, '', [])
         setTabs(recomputed)
         setActiveTabId(recomputed[0].id)
         const name = parsed.projectName ?? 'Untitled'
