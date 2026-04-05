@@ -9,10 +9,15 @@ export const UNICODE_CONSTANTS: Record<string, number> = {
   φ: (1 + Math.sqrt(5)) / 2,
 }
 
-// Matches \sum_{var=start}^{end}{body} or \sum_{var=start}^{end}body
-// Bare superscript (^n) only captures numeric digits to avoid eating the body.
-// Captures: 1=var, 2=start, 3=end(braced), 4=end(bare digits only), 5=everything after bounds
-export const SUM_RE = /\\sum_\{([a-zA-Z\u0080-\uFFFF]+)=([^}]+)\}\^(?:\{([^}]+)\}|([\d.]+))(.*)/
+// Matches \sum_{var=start}^{end}{body} — always expects braced upper bound.
+// We pre-parse the sum manually to handle both bare and braced bounds correctly.
+// Captures: 1=var, 2=start, 3=end, 4=everything after bounds
+export const SUM_RE = /\\sum_\{([a-zA-Z\u0080-\uFFFF]+)=([^}]+)\}\^(\{[^}]+\}|[^\s\\{])(.*)/
+
+// Extract the end bound value from the raw captured group (strips braces if present)
+function extractBound(raw: string): string {
+  return raw.startsWith('{') ? raw.slice(1, -1) : raw
+}
 
 // Split the raw string after the sum bounds into [bodyLatex, outsideLatex].
 //
@@ -70,9 +75,9 @@ function evaluateSum(
   const m = latex.match(SUM_RE)
   if (!m) return null
 
-  // Groups: 1=var, 2=start, 3=end(braced), 4=end(bare), 5=everything after bounds
-  const [, varName, startLatex, endBraced, endBare, afterBounds] = m
-  const endLatex = endBraced ?? endBare
+  // Groups: 1=var, 2=start, 3=end (braced or single char), 4=everything after bounds
+  const [, varName, startLatex, endRaw, afterBounds] = m
+  const endLatex = extractBound(endRaw)
 
   const [bodyLatex, outsideLatex] = splitSumBody(afterBounds ?? '')
   const resolvedBody = bodyLatex || varName   // fall back to bare index variable
@@ -185,7 +190,7 @@ export function hasUndefinedSymbols(input: string, scope: Record<string, unknown
   if (sumMatch) {
     // The index variable is local — exclude it from the undefined check.
     // Check the body and outside expression with the index var added to scope.
-    const [, varName, , , , afterBounds] = sumMatch
+    const [, varName, , , afterBounds] = sumMatch
     const [bodyLatex, outsideLatex] = splitSumBody(afterBounds ?? '')
     const innerScope = { ...scope, [varName]: 0 }
     const checkParts = [bodyLatex, outsideLatex].filter(Boolean)
