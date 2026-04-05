@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import Cell, { type CellHandle } from './Cell'
 import Graph from './Graph'
 import type { CellData, TabData } from '../types'
-import { evaluateCell, isGraphable, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS, math } from '../lib/mathScope'
+import { evaluateCell, isGraphable, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS, math, SUM_RE } from '../lib/mathScope'
 
 const PALETTE = ['#1e1b4b', '#1a73e8', '#b71c1c', '#188038', '#e37400', '#a142f4', '#007b83', '#c2185b']
 let colorIndex = 0
@@ -17,8 +17,10 @@ function makeTab(label: string): TabData {
   return { id: crypto.randomUUID(), label, cells: [makeCell()] }
 }
 
-// Returns the variable name being assigned, or null if not an assignment
+// Returns the variable name being assigned, or null if not an assignment.
+// Summation expressions are never assignments — their index variable is local to the sum.
 function getAssignedVar(latex: string): string | null {
+  if (SUM_RE.test(latex)) return null
   const mathInput = latexToMathjs(latex).trim()
   const m = mathInput.match(/^([a-zA-Z_\u0080-\uFFFF][a-zA-Z0-9_\u0080-\uFFFF]*)\s*=/)
   return m ? m[1] : null

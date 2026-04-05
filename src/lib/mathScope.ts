@@ -12,7 +12,7 @@ export const UNICODE_CONSTANTS: Record<string, number> = {
 // Matches \sum_{var=start}^{end}{body} or \sum_{var=start}^{end}body
 // Bare superscript (^n) only captures numeric digits to avoid eating the body.
 // Captures: 1=var, 2=start, 3=end(braced), 4=end(bare digits only), 5=body
-const SUM_RE = /\\sum_\{([a-zA-Z\u0080-\uFFFF]+)=([^}]+)\}\^(?:\{([^}]+)\}|([\d.]+))(.*)/
+export const SUM_RE = /\\sum_\{([a-zA-Z\u0080-\uFFFF]+)=([^}]+)\}\^(?:\{([^}]+)\}|([\d.]+))(.*)/
 
 // Evaluate a LaTeX summation by compiling the body and looping in JS.
 // Returns null if the input doesn't match the sum pattern.
