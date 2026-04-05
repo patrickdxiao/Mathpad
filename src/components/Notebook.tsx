@@ -126,9 +126,10 @@ export default function Notebook() {
   }
 
   function recomputeAllTabs(tabsSnapshot: TabData[], changedTabId: string, changedCells: CellData[]): TabData[] {
-    // Build one global scope across all tabs (two passes to handle chained cross-tab assignments)
+    // Build one global scope across all tabs.
+    // Repeat until stable — handles chains where tab A uses tab B's variable which uses tab C's.
     const globalScope: Record<string, unknown> = { ...UNICODE_CONSTANTS }
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < 4; pass++) {
       tabsSnapshot.forEach((tab) => {
         const cells = tab.id === changedTabId ? changedCells : tab.cells
         cells.forEach((c) => {
