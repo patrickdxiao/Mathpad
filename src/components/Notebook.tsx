@@ -95,8 +95,15 @@ function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}
     const { result, error } = evaluateCell(cell.input, { ...fullScope })
 
     const constantValue = getConstantValue(cell.input)
+    const existingSlider = cell.slider
+    const badBounds = existingSlider && (
+      (constantValue !== null && constantValue >= 0 && existingSlider.min < 0) ||
+      (constantValue !== null && constantValue <= 0 && existingSlider.max > 0) ||
+      (constantValue !== null && constantValue > existingSlider.max) ||
+      (constantValue !== null && constantValue < existingSlider.min)
+    )
     const slider: SliderConfig | undefined = constantValue !== null
-      ? (cell.slider ?? defaultBounds(constantValue))
+      ? (existingSlider && !badBounds ? existingSlider : defaultBounds(constantValue))
       : undefined
 
     const silent = hasUndefined || graphEnabled
@@ -320,7 +327,10 @@ export default function Notebook() {
       try {
         const parsed = JSON.parse(ev.target?.result as string)
         if (!Array.isArray(parsed.tabs)) return
-        const loadedTabs: TabData[] = parsed.tabs
+        const loadedTabs: TabData[] = (parsed.tabs as TabData[]).map((tab) => ({
+          ...tab,
+          cells: tab.cells.map((c) => ({ ...c, slider: undefined })),
+        }))
         const recomputed = recomputeAllTabs(loadedTabs, '', [])
         setTabs(recomputed)
         setActiveTabId(recomputed[0].id)
