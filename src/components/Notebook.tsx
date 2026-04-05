@@ -137,6 +137,7 @@ export default function Notebook() {
   const cellRefs = useRef<Map<string, CellHandle>>(new Map())
   const [saveModalOpen, setSaveModalOpen] = useState(false)
   const [saveModalName, setSaveModalName] = useState('')
+  const [toast, setToast] = useState(false)
   const isDirty = useRef(false)
 
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -319,16 +320,51 @@ export default function Notebook() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [])
 
-  function doSave(name: string) {
+  const fileHandleRef = useRef<FileSystemFileHandle | null>(null)
+
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function showToast() {
+    setToast(true)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(false), 1000)
+  }
+
+  async function doSave(name: string) {
     isDirty.current = false
     const json = JSON.stringify({ projectName: name, tabs }, null, 2)
     const blob = new Blob([json], { type: 'application/json' })
+
+    if ('showSaveFilePicker' in window) {
+      try {
+        if (!fileHandleRef.current) {
+          fileHandleRef.current = await (window as any).showSaveFilePicker({
+            suggestedName: `${name}.json`,
+            types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+          })
+        } else {
+          // Verify we still have write permission before attempting
+          const permission = await (fileHandleRef.current as any).requestPermission({ mode: 'readwrite' })
+          if (permission !== 'granted') { fileHandleRef.current = null; throw new Error('permission denied') }
+        }
+        const writable = await fileHandleRef.current!.createWritable()
+        await writable.write(blob)
+        await writable.close()
+        showToast()
+        return
+      } catch (e: any) {
+        if (e.name === 'AbortError') { isDirty.current = true; return }
+        fileHandleRef.current = null
+      }
+    }
+
+    // Fallback for Safari / any failure above
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = `${name}.json`
     a.click()
     URL.revokeObjectURL(url)
+    showToast()
   }
 
   function handleSave() {
@@ -357,6 +393,8 @@ export default function Notebook() {
         const recomputed = recomputeAllTabs(loadedTabs, '', [])
         setTabs(recomputed)
         setActiveTabId(recomputed[0].id)
+        fileHandleRef.current = null
+        isDirty.current = false
         const name = parsed.projectName ?? 'Untitled'
         setProjectName(name)
         setTitleValue(name)
@@ -576,6 +614,18 @@ export default function Notebook() {
       <div style={{ flex: 1, minWidth: 0, height: '100vh' }}>
         <Graph expressions={graphExpressions} colors={graphColors} scope={scopeSnapshot} onCurveClick={handleCurveClick} />
       </div>
+    </div>
+
+    {/* Toast notification */}
+    <div style={{
+      position: 'fixed', top: '1.25rem', left: '50%', transform: 'translateX(-50%)',
+      background: '#1e1b4b', color: '#fff', padding: '0.45rem 1.1rem',
+      borderRadius: '999px', fontSize: '0.85rem', fontFamily: 'inherit',
+      pointerEvents: 'none', zIndex: 3000,
+      opacity: toast ? 1 : 0,
+      transition: 'opacity 0.3s ease',
+    }}>
+      Saved
     </div>
 
     {/* Save-as modal */}
