@@ -135,6 +135,8 @@ export default function Notebook() {
   const [titleValue, setTitleValue] = useState('Untitled')
   const [panelWidth, setPanelWidth] = useState(400)
   const cellRefs = useRef<Map<string, CellHandle>>(new Map())
+  const [saveModalOpen, setSaveModalOpen] = useState(false)
+  const [saveModalName, setSaveModalName] = useState('')
 
   const [drag, setDrag] = useState<DragState | null>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -306,15 +308,24 @@ export default function Notebook() {
     }
   }, [cells.length, activeTab.id])
 
-  function handleSave() {
-    const json = JSON.stringify({ projectName, tabs }, null, 2)
+  function doSave(name: string) {
+    const json = JSON.stringify({ projectName: name, tabs }, null, 2)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${projectName}.json`
+    a.download = `${name}.json`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  function handleSave() {
+    if (projectName === 'Untitled') {
+      setSaveModalName('')
+      setSaveModalOpen(true)
+    } else {
+      doSave(projectName)
+    }
   }
 
   const loadInputRef = useRef<HTMLInputElement>(null)
@@ -397,6 +408,7 @@ export default function Notebook() {
   }
 
   return (
+    <>
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       {/* Notebook panel */}
       <div style={{ width: `${panelWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', background: '#fff', borderLeft: '1px solid #111', borderRight: '1px solid #111' }}>
@@ -553,5 +565,71 @@ export default function Notebook() {
         <Graph expressions={graphExpressions} colors={graphColors} scope={scopeSnapshot} onCurveClick={handleCurveClick} />
       </div>
     </div>
+
+    {/* Save-as modal */}
+    {saveModalOpen && (
+      <div
+        onClick={() => setSaveModalOpen(false)}
+        style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000,
+        }}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            background: '#fff', borderRadius: '8px', padding: '1.5rem',
+            width: '320px', boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+            display: 'flex', flexDirection: 'column', gap: '1rem',
+          }}
+        >
+          <div style={{ fontSize: '1rem', fontWeight: 600, color: '#1e1b4b' }}>Name your project</div>
+          <input
+            autoFocus
+            value={saveModalName}
+            onChange={(e) => setSaveModalName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const v = saveModalName.trim()
+                if (!v) return
+                const name = v
+                setProjectName(name); setTitleValue(name)
+                setSaveModalOpen(false); doSave(name)
+              }
+              if (e.key === 'Escape') setSaveModalOpen(false)
+            }}
+            placeholder="Project name"
+            style={{
+              border: 'none', borderBottom: '2px solid #1e1b4b', outline: 'none',
+              fontSize: '1rem', padding: '0.25rem 0', width: '100%',
+              fontFamily: 'inherit', color: '#111',
+            }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+            <button
+              onClick={() => setSaveModalOpen(false)}
+              style={{
+                padding: '0.4rem 1rem', border: '1px solid #ddd', borderRadius: '5px',
+                background: '#f5f5f5', cursor: 'pointer', fontSize: '0.875rem', color: '#555',
+              }}
+            >Cancel</button>
+            <button
+              onClick={() => {
+                const v = saveModalName.trim()
+                if (!v) return
+                const name = v
+                setProjectName(name); setTitleValue(name)
+                setSaveModalOpen(false); doSave(name)
+              }}
+              style={{
+                padding: '0.4rem 1rem', border: 'none', borderRadius: '5px',
+                background: '#1e1b4b', color: '#fff', cursor: 'pointer', fontSize: '0.875rem',
+              }}
+            >Save</button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
