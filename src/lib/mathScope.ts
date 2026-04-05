@@ -116,6 +116,8 @@ export function latexToMathjs(latex: string): string {
   let prev = ''
   while (prev !== s) {
     prev = s
+    // Handle shorthand \frac57 (no braces, single char numerator/denominator)
+    s = s.replace(/\\frac([^{\\])([^{\\])/g, '($1)/($2)')
     s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)')
   }
 

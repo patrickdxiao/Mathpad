@@ -50,6 +50,7 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
     mf.mathVirtualKeyboardPolicy = 'manual'
     mf.letterShapeStyle = 'upright'
     mf.inlineShortcuts = {}
+    ;(mf as any).smartFence = true
 
     function handleInput() {
       onUpdate(cell.id, mf!.getValue())
