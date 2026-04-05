@@ -137,6 +137,7 @@ export default function Notebook() {
   const cellRefs = useRef<Map<string, CellHandle>>(new Map())
   const [saveModalOpen, setSaveModalOpen] = useState(false)
   const [saveModalName, setSaveModalName] = useState('')
+  const isDirty = useRef(false)
 
   const [drag, setDrag] = useState<DragState | null>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -180,6 +181,7 @@ export default function Notebook() {
   }
 
   function handleUpdate(id: string, input: string) {
+    isDirty.current = true
     const updated = cells.map((c) => (c.id === id ? { ...c, input } : c))
     setTabs((prev) => recomputeAllTabs(prev, activeTab.id, updated))
   }
@@ -308,7 +310,17 @@ export default function Notebook() {
     }
   }, [cells.length, activeTab.id])
 
+  useEffect(() => {
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      if (!isDirty.current) return
+      e.preventDefault()
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [])
+
   function doSave(name: string) {
+    isDirty.current = false
     const json = JSON.stringify({ projectName: name, tabs }, null, 2)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
