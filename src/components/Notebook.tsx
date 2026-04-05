@@ -126,30 +126,27 @@ export default function Notebook() {
   }
 
   function recomputeAllTabs(tabsSnapshot: TabData[], changedTabId: string, changedCells: CellData[]): TabData[] {
-    // First pass: build the full global scope from the updated cells of every tab
+    // Build one global scope across all tabs (two passes to handle chained cross-tab assignments)
     const globalScope: Record<string, unknown> = { ...UNICODE_CONSTANTS }
-    tabsSnapshot.forEach((tab) => {
-      const cells = tab.id === changedTabId ? changedCells : tab.cells
-      cells.forEach((c) => {
-        const mathInput = latexToMathjs(c.input).trim()
-        if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
-        try { evaluateCell(c.input, globalScope) } catch { /* skip */ }
-      })
-    })
-
-    // Second pass: recompute each tab using every other tab's variables as its base scope
-    return tabsSnapshot.map((tab) => {
-      const cells = tab.id === changedTabId ? changedCells : tab.cells
-      const base: Record<string, unknown> = {}
-      tabsSnapshot.forEach((other) => {
-        if (other.id === tab.id) return
-        const otherCells = other.id === changedTabId ? changedCells : other.cells
-        otherCells.forEach((c) => {
+    for (let pass = 0; pass < 2; pass++) {
+      tabsSnapshot.forEach((tab) => {
+        const cells = tab.id === changedTabId ? changedCells : tab.cells
+        cells.forEach((c) => {
           const mathInput = latexToMathjs(c.input).trim()
           if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
-          try { evaluateCell(c.input, base) } catch { /* skip */ }
+          try { evaluateCell(c.input, globalScope) } catch { /* skip */ }
         })
       })
+    }
+
+    // Recompute each tab — pass global scope minus this tab's own assignments as base
+    // so recomputeAll can detect same-variable-in-two-tabs conflicts
+    return tabsSnapshot.map((tab) => {
+      const cells = tab.id === changedTabId ? changedCells : tab.cells
+      const thisTabVars = new Set(cells.map((c) => getAssignedVar(c.input)).filter(Boolean))
+      const base: Record<string, unknown> = Object.fromEntries(
+        Object.entries(globalScope).filter(([k]) => !thisTabVars.has(k))
+      )
       return { ...tab, cells: recomputeAll(cells, base) }
     })
   }
