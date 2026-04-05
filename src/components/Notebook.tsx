@@ -92,20 +92,6 @@ function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}
   })
 }
 
-// Scope from all tabs except the given one — shared variables available everywhere
-function buildBaseScope(excludeTabId: string, allTabs: TabData[]): Record<string, unknown> {
-  const base: Record<string, unknown> = {}
-  allTabs.forEach((tab) => {
-    if (tab.id === excludeTabId) return
-    tab.cells.forEach((c) => {
-      const mathInput = latexToMathjs(c.input).trim()
-      if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
-      try { evaluateCell(c.input, base) } catch { /* skip */ }
-    })
-  })
-  return base
-}
-
 // Drag state tracked in a ref so mousemove never causes re-renders
 interface DragState {
   dragIndex: number
@@ -139,10 +125,38 @@ export default function Notebook() {
     setTabs((prev) => prev.map((t) => t.id === activeTab.id ? { ...t, cells: newCells } : t))
   }
 
+  function recomputeAllTabs(tabsSnapshot: TabData[], changedTabId: string, changedCells: CellData[]): TabData[] {
+    // First pass: build the full global scope from the updated cells of every tab
+    const globalScope: Record<string, unknown> = { ...UNICODE_CONSTANTS }
+    tabsSnapshot.forEach((tab) => {
+      const cells = tab.id === changedTabId ? changedCells : tab.cells
+      cells.forEach((c) => {
+        const mathInput = latexToMathjs(c.input).trim()
+        if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
+        try { evaluateCell(c.input, globalScope) } catch { /* skip */ }
+      })
+    })
+
+    // Second pass: recompute each tab using every other tab's variables as its base scope
+    return tabsSnapshot.map((tab) => {
+      const cells = tab.id === changedTabId ? changedCells : tab.cells
+      const base: Record<string, unknown> = {}
+      tabsSnapshot.forEach((other) => {
+        if (other.id === tab.id) return
+        const otherCells = other.id === changedTabId ? changedCells : other.cells
+        otherCells.forEach((c) => {
+          const mathInput = latexToMathjs(c.input).trim()
+          if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
+          try { evaluateCell(c.input, base) } catch { /* skip */ }
+        })
+      })
+      return { ...tab, cells: recomputeAll(cells, base) }
+    })
+  }
+
   function handleUpdate(id: string, input: string) {
     const updated = cells.map((c) => (c.id === id ? { ...c, input } : c))
-    const base = buildBaseScope(activeTab.id, tabs)
-    updateCells(recomputeAll(updated, base))
+    setTabs((prev) => recomputeAllTabs(prev, activeTab.id, updated))
   }
 
   function handleEnter(id: string) {
@@ -156,8 +170,8 @@ export default function Notebook() {
 
   function handleDelete(id: string) {
     const next = cells.filter((c) => c.id !== id)
-    const base = buildBaseScope(activeTab.id, tabs)
-    updateCells(next.length > 0 ? recomputeAll(next, base) : [makeCell()])
+    const updated = next.length > 0 ? next : [makeCell()]
+    setTabs((prev) => recomputeAllTabs(prev, activeTab.id, updated))
   }
 
   function handleToggleVisible(id: string) {
@@ -227,14 +241,11 @@ export default function Notebook() {
 
       if (targetIndex !== dragIndex) {
         setTabs((prevTabs) => {
-          const base = buildBaseScope(activeTab.id, prevTabs)
-          return prevTabs.map((t) => {
-            if (t.id !== activeTab.id) return t
-            const next = [...t.cells]
-            const [moved] = next.splice(dragIndex, 1)
-            next.splice(targetIndex, 0, moved)
-            return { ...t, cells: recomputeAll(next, base) }
-          })
+          const activeTabInPrev = prevTabs.find((t) => t.id === activeTab.id)!
+          const next = [...activeTabInPrev.cells]
+          const [moved] = next.splice(dragIndex, 1)
+          next.splice(targetIndex, 0, moved)
+          return recomputeAllTabs(prevTabs, activeTab.id, next)
         })
       }
 

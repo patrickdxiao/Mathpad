@@ -49,8 +49,8 @@ export default forwardRef<CellHandle, CellProps>(function Cell({ cell, index, st
     if (!mf) return
     mf.mathVirtualKeyboardPolicy = 'manual'
     mf.letterShapeStyle = 'upright'
+    mf.smartFence = true
     mf.inlineShortcuts = {}
-    ;(mf as any).smartFence = true
 
     function handleInput() {
       onUpdate(cell.id, mf!.getValue())
