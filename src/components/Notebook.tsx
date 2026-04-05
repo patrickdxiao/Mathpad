@@ -342,7 +342,11 @@ export default function Notebook() {
             types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
           })
         } else {
-          // Verify we still have write permission before attempting
+          // Verify the file still exists — if deleted, treat as a fresh save
+          try { await fileHandleRef.current!.getFile() } catch {
+            fileHandleRef.current = null
+            return doSave(name)
+          }
           const permission = await (fileHandleRef.current as any).requestPermission({ mode: 'readwrite' })
           if (permission !== 'granted') { fileHandleRef.current = null; throw new Error('permission denied') }
         }
