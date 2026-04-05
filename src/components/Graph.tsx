@@ -588,12 +588,9 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
       {/* Cursor coordinates */}
       {mouseCoords && (
         <div style={{
-          position: 'absolute', top: '12px', left: '14px',
-          background: 'rgba(255,255,255,0.9)', border: '1px solid #ddd',
-          borderRadius: '6px', padding: '4px 8px',
-          fontSize: '11px', fontFamily: 'ui-monospace, Consolas, monospace',
-          color: '#555', pointerEvents: 'none',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+          position: 'absolute', bottom: '14px', left: '14px',
+          fontSize: '16px', fontFamily: 'KaTeX_Main, serif',
+          color: '#1e1b4b', pointerEvents: 'none',
         }}>
           ({formatLabel(mouseCoords.x)}, {formatLabel(mouseCoords.y)})
         </div>

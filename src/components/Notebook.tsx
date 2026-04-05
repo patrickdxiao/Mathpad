@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import Cell, { type CellHandle } from './Cell'
 import Graph from './Graph'
-import type { CellData, TabData } from '../types'
-import { evaluateCell, isGraphable, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS, math, SUM_RE } from '../lib/mathScope'
+import type { CellData, TabData, SliderConfig } from '../types'
+import { evaluateCell, isGraphable, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS, math, SUM_RE, getConstantValue } from '../lib/mathScope'
 
 const PALETTE = ['#1e1b4b', '#1a73e8', '#b71c1c', '#188038', '#e37400', '#a142f4', '#007b83', '#c2185b']
 let colorIndex = 0
@@ -24,6 +24,16 @@ function getAssignedVar(latex: string): string | null {
   const mathInput = latexToMathjs(latex).trim()
   const m = mathInput.match(/^([a-zA-Z_\u0080-\uFFFF][a-zA-Z0-9_\u0080-\uFFFF]*)\s*=/)
   return m ? m[1] : null
+}
+
+// Pick sensible default slider bounds for a given value
+function defaultBounds(value: number): SliderConfig {
+  if (value === 0) return { min: -10, max: 10, visible: true }
+  const abs = Math.abs(value)
+  const magnitude = Math.pow(10, Math.floor(Math.log10(abs)))
+  const rounded = Math.ceil(abs / magnitude) * magnitude * 2
+  if (value >= 0) return { min: 0, max: rounded, visible: true }
+  return { min: -rounded, max: 0, visible: true }
 }
 
 function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}): CellData[] {
@@ -82,12 +92,18 @@ function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}
     const hasUndefined = hasUndefinedSymbols(cell.input, fullScope)
     const { result, error } = evaluateCell(cell.input, { ...fullScope })
 
+    const constantValue = getConstantValue(cell.input)
+    const slider: SliderConfig | undefined = constantValue !== null
+      ? (cell.slider ?? defaultBounds(constantValue))
+      : undefined
+
     const silent = hasUndefined || graphEnabled
     return {
       ...cell,
       output: silent ? null : (result || null),
       error: silent ? null : error,
       graphEnabled,
+      slider,
     }
   })
 }
@@ -178,6 +194,28 @@ export default function Notebook() {
 
   function handleColorChange(id: string, color: string) {
     updateCells(cells.map((c) => c.id === id ? { ...c, color } : c))
+  }
+
+  function handleSliderChange(id: string, value: number) {
+    const cell = cells.find((c) => c.id === id)
+    if (!cell) return
+    const varName = getAssignedVar(cell.input)
+    if (!varName) return
+    // Format cleanly — avoid floating point noise like 1.0000000000001
+    const formatted = parseFloat(value.toPrecision(10)).toString()
+    const newInput = `${varName}=${formatted}`
+    const updated = cells.map((c) => c.id === id ? { ...c, input: newInput } : c)
+    setTabs((prev) => recomputeAllTabs(prev, activeTab.id, updated))
+    // Sync MathLive field to show updated value
+    setTimeout(() => cellRefs.current.get(id)?.setValue(newInput), 0)
+  }
+
+  function handleSliderBoundsChange(id: string, min: number, max: number) {
+    updateCells(cells.map((c) => c.id === id && c.slider ? { ...c, slider: { ...c.slider, min, max } } : c))
+  }
+
+  function handleSliderToggle(id: string) {
+    updateCells(cells.map((c) => c.id === id && c.slider ? { ...c, slider: { ...c.slider, visible: !c.slider.visible } } : c))
   }
 
   function handleDragStart(index: number, clientY: number, cellHeight: number) {
@@ -479,6 +517,9 @@ export default function Notebook() {
               onDragStart={handleDragStart}
               onToggleVisible={handleToggleVisible}
               onColorChange={handleColorChange}
+              onSliderChange={handleSliderChange}
+              onSliderBoundsChange={handleSliderBoundsChange}
+              onSliderToggle={handleSliderToggle}
             />
           ))}
         </div>

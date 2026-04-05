@@ -1,3 +1,9 @@
+export interface SliderConfig {
+  min: number
+  max: number
+  visible: boolean
+}
+
 export interface CellData {
   id: string
   input: string
@@ -6,6 +12,7 @@ export interface CellData {
   graphEnabled: boolean
   graphVisible: boolean
   color: string
+  slider?: SliderConfig
 }
 
 export interface TabData {

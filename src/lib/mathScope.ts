@@ -164,6 +164,15 @@ export function latexToMathjs(latex: string): string {
   return s.trim()
 }
 
+// Returns the numeric RHS if input is a plain constant assignment like "days = 30", else null
+export function getConstantValue(input: string): number | null {
+  const mathInput = latexToMathjs(input).trim()
+  const m = mathInput.match(/^[a-zA-Z_\u0080-\uFFFF][a-zA-Z0-9_\u0080-\uFFFF]*\s*=\s*(.+)$/)
+  if (!m) return null
+  const n = Number(m[1].trim())
+  return isFinite(n) ? n : null
+}
+
 export function evaluateCell(
   input: string,
   customScope: Record<string, unknown> = {}
