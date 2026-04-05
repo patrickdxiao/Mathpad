@@ -11,8 +11,55 @@ export const UNICODE_CONSTANTS: Record<string, number> = {
 
 // Matches \sum_{var=start}^{end}{body} or \sum_{var=start}^{end}body
 // Bare superscript (^n) only captures numeric digits to avoid eating the body.
-// Captures: 1=var, 2=start, 3=end(braced), 4=end(bare digits only), 5=body
+// Captures: 1=var, 2=start, 3=end(braced), 4=end(bare digits only), 5=everything after bounds
 export const SUM_RE = /\\sum_\{([a-zA-Z\u0080-\uFFFF]+)=([^}]+)\}\^(?:\{([^}]+)\}|([\d.]+))(.*)/
+
+// Split the raw string after the sum bounds into [bodyLatex, outsideLatex].
+//
+// Rules (match standard math notation):
+//   - If the entire after-bounds string is wrapped in parens → whole thing is body, nothing outside
+//   - Otherwise body ends at the first top-level + or - (not inside parens/braces)
+//   - If no top-level +/- found → entire string is the body
+//
+// "Top-level" means depth 0 — we track paren/brace nesting as we scan.
+function splitSumBody(raw: string): [string, string] {
+  const s = raw.trim()
+  if (!s) return ['', '']
+
+  // Whole thing in parens → entire content is the body, nothing outside
+  if (s.startsWith('(') || s.startsWith('{')) {
+    let depth = 0
+    const open = s[0], close = open === '(' ? ')' : '}'
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === open) depth++
+      else if (s[i] === close) {
+        depth--
+        if (depth === 0) {
+          const body = s.slice(1, i)           // strip outer delimiters
+          const outside = s.slice(i + 1).trim()
+          // Only treat as "whole body in parens" if the closing delimiter ends at or near the end
+          // e.g. (5i)*2 — the *2 is outside too, but (5i) alone wraps the body
+          // We return body=inner, outside=rest after the closing delimiter
+          return [body, outside]
+        }
+      }
+    }
+  }
+
+  // Scan for first top-level + or - to find where body ends
+  let depth = 0
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '(' || ch === '{') depth++
+    else if (ch === ')' || ch === '}') depth--
+    else if (depth === 0 && (ch === '+' || ch === '-') && i > 0) {
+      return [s.slice(0, i).trim(), s.slice(i).trim()]
+    }
+  }
+
+  // No top-level +/- found — entire string is the body
+  return [s, '']
+}
 
 // Evaluate a LaTeX summation by compiling the body and looping in JS.
 // Returns null if the input doesn't match the sum pattern.
@@ -23,21 +70,31 @@ function evaluateSum(
   const m = latex.match(SUM_RE)
   if (!m) return null
 
-  // Groups: 1=var, 2=start, 3=end(braced), 4=end(bare), 5=body
-  const [, varName, startLatex, endBraced, endBare, bodyRaw] = m
+  // Groups: 1=var, 2=start, 3=end(braced), 4=end(bare), 5=everything after bounds
+  const [, varName, startLatex, endBraced, endBare, afterBounds] = m
   const endLatex = endBraced ?? endBare
-  // Body may be wrapped in braces {expr} or bare; fall back to the index variable itself
-  const bodyLatex = (bodyRaw?.replace(/^\{(.*)\}$/, '$1').trim()) || varName
+
+  const [bodyLatex, outsideLatex] = splitSumBody(afterBounds ?? '')
+  const resolvedBody = bodyLatex || varName   // fall back to bare index variable
 
   try {
     const start = Math.round(Number(math.evaluate(latexToMathjs(startLatex), scope)))
     const end = Math.round(Number(math.evaluate(latexToMathjs(endLatex), scope)))
-    const bodyExpr = math.compile(latexToMathjs(bodyLatex))
 
+    // Compile body with index variable excluded from MATH_BUILTINS collision
+    const bodyExpr = math.compile(latexToMathjs(resolvedBody))
     let acc = 0
     for (let i = start; i <= end; i++) {
       acc += Number(bodyExpr.evaluate({ ...scope, [varName]: i }))
     }
+
+    // If there's an expression outside the sum (e.g. \sum_{i=0}^{5}5i + 3), evaluate it
+    // and combine with the sum result
+    if (outsideLatex) {
+      const total = math.evaluate(`${acc}${latexToMathjs(outsideLatex)}`, scope)
+      return { result: String(parseFloat(Number(total).toPrecision(14))), error: null }
+    }
+
     return { result: String(acc), error: null }
   } catch (e) {
     return { result: '', error: (e as Error).message }
@@ -124,8 +181,16 @@ const MATH_BUILTINS = ['pi', 'e', 'i', 'Infinity', 'NaN', 'true', 'false', ...Ob
 
 // Returns true if the expression references any symbol not in scope and not a known builtin/function
 export function hasUndefinedSymbols(input: string, scope: Record<string, unknown>): boolean {
-  // Summations with a valid index variable are self-contained
-  if (SUM_RE.test(input)) return false
+  const sumMatch = input.match(SUM_RE)
+  if (sumMatch) {
+    // The index variable is local — exclude it from the undefined check.
+    // Check the body and outside expression with the index var added to scope.
+    const [, varName, , , , afterBounds] = sumMatch
+    const [bodyLatex, outsideLatex] = splitSumBody(afterBounds ?? '')
+    const innerScope = { ...scope, [varName]: 0 }
+    const checkParts = [bodyLatex, outsideLatex].filter(Boolean)
+    return checkParts.some((part) => hasUndefinedSymbols(part, innerScope))
+  }
 
   try {
     const symbols = new Set<string>()
