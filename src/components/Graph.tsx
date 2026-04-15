@@ -550,18 +550,59 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
       }
     })
 
-    // Sample the depth buffer at a projected point to check if it's occluded by a surface.
-    // Returns true if a surface is closer (in front) at that pixel.
-    const isOccluded = (p: { px: number; py: number; d: number }) => {
-      const ix = Math.round(p.px * dpr), iy = Math.round(p.py * dpr)
-      if (ix < 0 || ix >= iw || iy < 0 || iy >= ih) return false
-      return depthBuf[iy * iw + ix] < p.d
-    }
-
     const drawAxesAndLabels = () => {
-      const AXIS_SEGMENTS = 40
+      const AXIS_SEGMENTS = 56
       const ARROW = 7  // arrowhead size in CSS px
       const PAD = 14   // label padding from canvas edge in CSS px
+
+      const hexToRgbTriplet = (hex: string): [number, number, number] => {
+        const h = hex.replace('#', '')
+        const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16)
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+      }
+
+      // Blend base axis color toward a custom behind-shade.
+      // This avoids abrupt segment toggles where surfaces intersect an axis.
+      const blendedAxisColor = (baseHex: string, fadeRgb: [number, number, number], behindT: number): string => {
+        const t = Math.max(0, Math.min(1, behindT))
+        const [r, g, b] = hexToRgbTriplet(baseHex)
+        const rr = Math.round(r * (1 - t) + fadeRgb[0] * t)
+        const gg = Math.round(g * (1 - t) + fadeRgb[1] * t)
+        const bb = Math.round(b * (1 - t) + fadeRgb[2] * t)
+        return `rgb(${rr},${gg},${bb})`
+      }
+
+      // Draw a subtle same-hue tube in screen space so axes stay readable over surfaces.
+      const drawTubeSegment = (
+        a: { px: number; py: number },
+        b: { px: number; py: number },
+        core: string,
+        coreWidth: number,
+        outerWidth: number,
+        outerAlpha: number
+      ) => {
+        ctx.lineCap = 'round'
+        ctx.lineJoin = 'round'
+        if (outerAlpha > 0) {
+          // Same-hue outer pass adds subtle volume without white/gray cast.
+          ctx.save()
+          ctx.globalAlpha = outerAlpha
+          ctx.strokeStyle = core
+          ctx.lineWidth = outerWidth
+          ctx.beginPath()
+          ctx.moveTo(a.px, a.py)
+          ctx.lineTo(b.px, b.py)
+          ctx.stroke()
+          ctx.restore()
+        }
+
+        ctx.strokeStyle = core
+        ctx.lineWidth = coreWidth
+        ctx.beginPath()
+        ctx.moveTo(a.px, a.py)
+        ctx.lineTo(b.px, b.py)
+        ctx.stroke()
+      }
 
       const drawArrow = (tip: { px: number; py: number }, from: { px: number; py: number }, color: string) => {
         const dx = tip.px - from.px, dy = tip.py - from.py
@@ -577,39 +618,59 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
         ctx.fill()
       }
 
-      const drawAxis = (sx: number, sy: number, sz: number, color: string, fadeColor: string, label: string) => {
+      const drawAxis = (
+        sx: number,
+        sy: number,
+        sz: number,
+        color: string,
+        fadeColor: string,
+        fadeRgb: [number, number, number],
+        label: string
+      ) => {
         const posEnd = sem(sx * axisEnd, sy * axisEnd, sz * axisEnd)
         const negEnd = sem(-sx * RANGE, -sy * RANGE, -sz * RANGE)
 
-        // Negative half — always faded
-        ctx.strokeStyle = fadeColor
-        ctx.lineWidth = 1.5
-        ctx.beginPath()
-        ctx.moveTo(origin.px, origin.py)
-        ctx.lineTo(negEnd.px, negEnd.py)
-        ctx.stroke()
+        // Negative half is always the behind shade.
+        drawTubeSegment(negEnd, origin, fadeColor, 1.6, 2.7, 0.2)
 
-        // Positive half — draw segment by segment, each faded if occluded at that point
-        let prevPt = origin
-        let tipColor = color
+        // Positive half: smooth occlusion to avoid spotty toggling at intersections.
+        const points: Array<{ px: number; py: number; d: number }> = [origin]
+        const occ: number[] = [isOccluded(origin) ? 1 : 0]
         for (let s = 1; s <= AXIS_SEGMENTS; s++) {
           const t = s / AXIS_SEGMENTS
           const wpt = sem(sx * axisEnd * t, sy * axisEnd * t, sz * axisEnd * t)
-          const behind = isOccluded(wpt)
-          const segColor = behind ? fadeColor : color
-          if (s === AXIS_SEGMENTS) tipColor = segColor
-          ctx.strokeStyle = segColor
-          ctx.lineWidth = 1.5
-          ctx.beginPath()
-          ctx.moveTo(prevPt.px, prevPt.py)
-          ctx.lineTo(wpt.px, wpt.py)
-          ctx.stroke()
+          points.push(wpt)
+          occ.push(isOccluded(wpt) ? 1 : 0)
+        }
+
+        const smoothedOcc = occ.map((_, i) => {
+          let sum = 0
+          let count = 0
+          for (let k = Math.max(0, i - 2); k <= Math.min(occ.length - 1, i + 2); k++) {
+            sum += occ[k]
+            count++
+          }
+          return count > 0 ? sum / count : occ[i]
+        })
+
+        let prevPt = origin
+        for (let s = 1; s <= AXIS_SEGMENTS; s++) {
+          const wpt = points[s]
+          const occT = (smoothedOcc[s - 1] + smoothedOcc[s]) * 0.5
+          // Keep fronts solid and backs faded; only interpolate in a narrow band.
+          const core =
+            occT <= 0.35 ? color
+            : occT >= 0.65 ? fadeColor
+            : blendedAxisColor(color, fadeRgb, (occT - 0.35) / 0.30)
+          // No outer pass in front; ramp it in only as segments move behind surfaces.
+          const outerAlpha = occT <= 0.35 ? 0 : (occT - 0.35) / 0.65 * 0.2
+          drawTubeSegment(prevPt, wpt, core, 2.2, 3.4, outerAlpha)
           prevPt = wpt
         }
 
         // Arrowhead at tip
         const nearTip = sem(sx * axisEnd * 0.97, sy * axisEnd * 0.97, sz * axisEnd * 0.97)
-        drawArrow(posEnd, nearTip, tipColor)
+        drawArrow(posEnd, nearTip, blendedAxisColor(color, fadeRgb, smoothedOcc[smoothedOcc.length - 1] ?? 0))
 
         // Label — offset beyond tip, clamped to canvas bounds
         const rawLx = posEnd.px + (posEnd.px - origin.px) * 0.18
@@ -617,17 +678,16 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
         const lx = Math.max(PAD, Math.min(w - PAD, rawLx))
         const ly = Math.max(PAD, Math.min(h - PAD, rawLy))
 
-        const labelBehind = isOccluded(posEnd)
-        ctx.fillStyle = labelBehind ? fadeColor : color
+        ctx.fillStyle = blendedAxisColor(color, fadeRgb, smoothedOcc[smoothedOcc.length - 1] ?? 0)
         ctx.font = 'bold 12px system-ui, sans-serif'
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText(label, lx, ly)
       }
 
-      drawAxis(1, 0, 0, '#e53', 'rgba(238,85,51,0.25)', 'x')
-      drawAxis(0, 1, 0, '#3a3', 'rgba(51,170,51,0.25)', 'y')
-      drawAxis(0, 0, 1, '#36e', 'rgba(51,102,238,0.25)', 'z')
+      drawAxis(1, 0, 0, '#ff3b30', 'rgba(255,59,48,0.28)', [255, 140, 135], 'x')
+      drawAxis(0, 1, 0, '#31b24c', 'rgba(49,178,76,0.28)', [155, 220, 168], 'y')
+      drawAxis(0, 0, 1, '#2f6dff', 'rgba(47,109,255,0.28)', [152, 184, 255], 'z')
 
       ctx.font = '10px system-ui, sans-serif'
       ctx.fillStyle = '#999'
@@ -657,6 +717,37 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.drawImage(offscreen, 0, 0)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+    // Sample the depth buffer at a projected point to check if it's occluded by a surface.
+    // Returns true if a surface is closer (in front) at that pixel.
+    const isOccluded = (p: { px: number; py: number; d: number }) => {
+      const ix = Math.round(p.px * dpr)
+      const iy = Math.round(p.py * dpr)
+      if (ix < 0 || ix >= iw || iy < 0 || iy >= ih) return false
+
+      // Robust occlusion check:
+      // - sample a small neighborhood to avoid single-pixel depth noise
+      // - require a depth margin so near-coplanar intersections keep the axis on top
+      // - use majority vote (not nearest pixel) to prevent over-fading while tilted
+      //   (avoids whole-axis fade from a few neighboring surface pixels)
+      let occludedCount = 0
+      let total = 0
+      const OCCLUSION_EPS = 0.09
+      for (let oy = -1; oy <= 1; oy++) {
+        const y = iy + oy
+        if (y < 0 || y >= ih) continue
+        for (let ox = -1; ox <= 1; ox++) {
+          const x = ix + ox
+          if (x < 0 || x >= iw) continue
+          const d = depthBuf[y * iw + x]
+          total++
+          if (d < p.d - OCCLUSION_EPS) occludedCount++
+        }
+      }
+
+      if (total === 0) return false
+      return occludedCount / total >= 0.6
+    }
 
     drawAxesAndLabels()
 
