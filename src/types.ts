@@ -4,6 +4,8 @@ export interface SliderConfig {
   visible: boolean
 }
 
+export type GraphMode = '2d' | '3d' | 'polar'
+
 export interface CellData {
   id: string
   input: string

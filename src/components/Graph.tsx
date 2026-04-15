@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { math, findHoles, isGraphable3D, isGraphablePolar, isXofY, get3DForm } from '../lib/mathScope'
+import { math, findHoles, isGraphablePolar, isXofY, get3DForm } from '../lib/mathScope'
 import GraphSettings from './GraphSettings'
+import type { GraphMode } from '../types'
 
 const GRID_COLOR = '#ebebeb'
 const AXIS_COLOR = '#111'
@@ -19,6 +20,8 @@ interface GraphProps {
   colors: string[]
   scope: Record<string, unknown>
   onCurveClick: (index: number) => void
+  graphMode: GraphMode
+  onGraphModeChange: (mode: GraphMode) => void
 }
 
 function niceInterval(rawInterval: number): number {
@@ -308,23 +311,7 @@ function project3D(
   return { px, py, depth: z2 }
 }
 
-// Height-based color: blue (low) → green → red (high), based on curve base color tint
-function heightColor(t: number, baseColor: string, alpha: number): string {
-  // t in [0,1]: 0 = min, 1 = max
-  const r = Math.round(30 + t * 200)
-  const g = Math.round(100 - t * 60)
-  const b = Math.round(220 - t * 200)
-  return `rgba(${r},${g},${b},${alpha})`
-}
-
-function heightColorEdge(t: number): string {
-  const r = Math.round(20 + t * 160)
-  const g = Math.round(80 - t * 50)
-  const b = Math.round(180 - t * 160)
-  return `rgba(${r},${g},${b},0.7)`
-}
-
-export default function Graph({ expressions, colors, scope, onCurveClick }: GraphProps) {
+export default function Graph({ expressions, colors, scope, onCurveClick, graphMode, onGraphModeChange }: GraphProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const view = useRef({ cx: 0, cy: 0, scale: 50 })
   const view3D = useRef({ rotX: 0.4, rotY: -0.6, unitsPerHalf: 0 })
@@ -340,8 +327,6 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
   const [xLabel, setXLabel] = useState('')
   const [yLabel, setYLabel] = useState('')
   const [lockViewport, setLockViewport] = useState(false)
-  type GraphMode = '2d' | '3d' | 'polar'
-  const [graphMode, setGraphMode] = useState<GraphMode>('2d')
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [fit3D, setFit3D] = useState(true)
   const is3D = graphMode === '3d'
@@ -479,8 +464,6 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     )
 
     // drawAxesAndLabels is defined after the depth buffer so it can sample it
-    let drawAxesAndLabels: () => void
-
     // Depth buffer rasterizer — one depth+color buffer shared across all surfaces
     const iw = Math.ceil(w * dpr), ih = Math.ceil(h * dpr)
     const depthBuf = new Float32Array(iw * ih).fill(Infinity)
@@ -549,7 +532,6 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
           const cosX = Math.cos(rotX), sinX = Math.sin(rotX)
           // Remap world normal (nx,ny,nz_world) to project3D input space (py=ny, pz=nz, px=nx)
           const px_ = ny, py_ = nz_world, pz_ = nx
-          const x1n = px_*cosY + pz_*sinY
           const z1n = -px_*sinY + pz_*cosY
           const nViewZ = py_*sinX + z1n*cosX  // z2 component = view-space depth = nz toward camera
           const nLen = Math.sqrt(nx*nx + ny*ny + nz_world*nz_world) || 1
@@ -576,7 +558,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
       return depthBuf[iy * iw + ix] < p.d
     }
 
-    drawAxesAndLabels = () => {
+    const drawAxesAndLabels = () => {
       const AXIS_SEGMENTS = 40
       const ARROW = 7  // arrowhead size in CSS px
       const PAD = 14   // label padding from canvas edge in CSS px
@@ -854,7 +836,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
     })
 
     const steps = Math.ceil(w * 2)
-    const zero = (_x: number) => 0
+    const zero = () => 0
 
     const allIntersections: TaggedIntersection[] = []
     const tol = (xMax - xMin) / steps * 2
@@ -1255,11 +1237,11 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
           if (!isFinite(prev) || !isFinite(curr)) { prev = curr; continue }
           if (prev * curr < 0) {
             let lo = theta - maxTheta / iSteps, hi = theta
-            let lt = prev, ht = curr
+            let lt = prev
             for (let k = 0; k < 40; k++) {
               const mid = (lo + hi) / 2
               const mt = fa(mid) - fb(mid)
-              if (lt * mt <= 0) { hi = mid; ht = mt } else { lo = mid; lt = mt }
+              if (lt * mt <= 0) { hi = mid } else { lo = mid; lt = mt }
             }
             const t0 = (lo + hi) / 2
             const r0 = fa(t0)
@@ -1503,7 +1485,8 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
           if (nodeHit >= 0) {
             if (activeNode.current.has(nodeHit)) activeNode.current.delete(nodeHit)
             else activeNode.current.add(nodeHit)
-            isPolar ? drawPolar() : draw()
+            if (isPolar) drawPolar()
+            else draw()
             drag.current = null
             return
           }
@@ -1529,7 +1512,8 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
             })
             if (curveHit >= 0) {
               toggleCurve(curveHit)
-              isPolar ? drawPolar() : draw()
+              if (isPolar) drawPolar()
+              else draw()
             }
           } else {
             const wx = cx + (px - rect.width / 2) / scale
@@ -1648,7 +1632,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick }: Grap
               {(['2d', '3d', 'polar'] as GraphMode[]).map((mode) => (
                 <button
                   key={mode}
-                  onClick={() => { setGraphMode(mode); setModeMenuOpen(false) }}
+                  onClick={() => { onGraphModeChange(mode); setModeMenuOpen(false) }}
                   style={{
                     display: 'block', width: '100%', padding: '8px 14px',
                     textAlign: 'left', border: 'none', cursor: 'pointer',

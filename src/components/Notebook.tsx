@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import Cell, { type CellHandle } from './Cell'
 import Graph from './Graph'
-import type { CellData, TabData, SliderConfig } from '../types'
+import type { CellData, TabData, SliderConfig, GraphMode } from '../types'
 import { evaluateCell, isGraphable, isGraphable3D, isGraphablePolar, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS, math, SUM_RE, getConstantValue } from '../lib/mathScope'
 
 const PALETTE = ['#1e1b4b', '#1a73e8', '#b71c1c', '#188038', '#e37400', '#a142f4', '#007b83', '#c2185b']
@@ -38,7 +38,13 @@ function defaultBounds(value: number): SliderConfig {
   return { min: -bound, max: 0, visible: true }
 }
 
-function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}): CellData[] {
+function isGraphableInMode(input: string, scope: Record<string, unknown>, graphMode: GraphMode): boolean {
+  if (graphMode === '3d') return isGraphable3D(input, scope)
+  if (graphMode === 'polar') return isGraphablePolar(input, scope)
+  return isGraphable(input, scope)
+}
+
+function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}, graphMode: GraphMode = '2d'): CellData[] {
   // Find variables defined more than once — within this tab or already in baseScope (another tab)
   const assignCounts = new Map<string, number>()
   cells.forEach((cell) => {
@@ -90,7 +96,7 @@ function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}
       } catch { /* skip */ }
     }
 
-    const graphEnabled = isGraphable(cell.input, fullScope) || isGraphable3D(cell.input, fullScope) || isGraphablePolar(cell.input, fullScope)
+    const graphEnabled = isGraphableInMode(cell.input, fullScope, graphMode)
     const hasUndefined = hasUndefinedSymbols(cell.input, fullScope)
     const { result, error } = evaluateCell(cell.input, { ...fullScope })
 
@@ -127,6 +133,7 @@ interface DragState {
 
 export default function Notebook() {
   const [tabs, setTabs] = useState<TabData[]>([makeTab('Sheet 1')])
+  const [graphMode, setGraphMode] = useState<GraphMode>('2d')
   const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0].id)
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -154,7 +161,7 @@ export default function Notebook() {
     setTabs((prev) => prev.map((t) => t.id === activeTab.id ? { ...t, cells: newCells } : t))
   }
 
-  function recomputeAllTabs(tabsSnapshot: TabData[], changedTabId: string, changedCells: CellData[]): TabData[] {
+  function recomputeAllTabs(tabsSnapshot: TabData[], changedTabId: string, changedCells: CellData[], mode: GraphMode = graphMode): TabData[] {
     // Build one global scope across all tabs.
     // Repeat until stable — handles chains where tab A uses tab B's variable which uses tab C's.
     const globalScope: Record<string, unknown> = { ...UNICODE_CONSTANTS }
@@ -177,7 +184,7 @@ export default function Notebook() {
       const base: Record<string, unknown> = Object.fromEntries(
         Object.entries(globalScope).filter(([k]) => !thisTabVars.has(k))
       )
-      return { ...tab, cells: recomputeAll(cells, base) }
+      return { ...tab, cells: recomputeAll(cells, base, mode) }
     })
   }
 
@@ -394,7 +401,7 @@ export default function Notebook() {
           ...tab,
           cells: tab.cells.map((c) => ({ ...c, slider: undefined })),
         }))
-        const recomputed = recomputeAllTabs(loadedTabs, '', [])
+        const recomputed = recomputeAllTabs(loadedTabs, '', [], graphMode)
         setTabs(recomputed)
         setActiveTabId(recomputed[0].id)
         fileHandleRef.current = null
@@ -459,6 +466,11 @@ export default function Notebook() {
     if (!entry) return
     setActiveTabId(entry.tabId)
     setTimeout(() => cellRefs.current.get(entry.cellId)?.focus(), 0)
+  }
+
+  function handleGraphModeChange(mode: GraphMode) {
+    setGraphMode(mode)
+    setTabs((prev) => recomputeAllTabs(prev, '', [], mode))
   }
 
   return (
@@ -616,7 +628,14 @@ export default function Notebook() {
 
       {/* Graph panel */}
       <div style={{ flex: 1, minWidth: 0, height: '100vh' }}>
-        <Graph expressions={graphExpressions} colors={graphColors} scope={scopeSnapshot} onCurveClick={handleCurveClick} />
+        <Graph
+          expressions={graphExpressions}
+          colors={graphColors}
+          scope={scopeSnapshot}
+          onCurveClick={handleCurveClick}
+          graphMode={graphMode}
+          onGraphModeChange={handleGraphModeChange}
+        />
       </div>
     </div>
 
