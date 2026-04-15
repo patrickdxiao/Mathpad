@@ -162,6 +162,12 @@ export function latexToMathjs(latex: string): string {
   // Strip leftover braces
   s = s.replace(/[{}]/g, '')
 
+  // Normalize implicit multiplication into explicit '*' to avoid math.js precedence surprises.
+  // Example: (1/10)3 should be parsed as (1/10)*3 (not 1/(10*3)).
+  s = s.replace(/\)(?=\s*[0-9A-Za-z_\u0080-\uFFFF(])/g, ')*')
+  // Support mixed/adjacent terms with whitespace, e.g. "3 1/10" -> "3*1/10".
+  s = s.replace(/([0-9A-Za-z_\u0080-\uFFFF)])\s+(?=[0-9A-Za-z_\u0080-\uFFFF(])/g, '$1*')
+
   return s.trim()
 }
 
