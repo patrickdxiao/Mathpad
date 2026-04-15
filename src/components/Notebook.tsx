@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import Cell, { type CellHandle } from './Cell'
 import Graph from './Graph'
 import type { CellData, TabData, SliderConfig } from '../types'
-import { evaluateCell, isGraphable, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS, math, SUM_RE, getConstantValue } from '../lib/mathScope'
+import { evaluateCell, isGraphable, isGraphable3D, isGraphablePolar, hasUndefinedSymbols, latexToMathjs, UNICODE_CONSTANTS, math, SUM_RE, getConstantValue } from '../lib/mathScope'
 
 const PALETTE = ['#1e1b4b', '#1a73e8', '#b71c1c', '#188038', '#e37400', '#a142f4', '#007b83', '#c2185b']
 let colorIndex = 0
@@ -43,7 +43,7 @@ function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}
   const assignCounts = new Map<string, number>()
   cells.forEach((cell) => {
     const v = getAssignedVar(cell.input)
-    if (v) assignCounts.set(v, (assignCounts.get(v) ?? 0) + 1)
+    if (v && v !== 'x' && v !== 'y' && v !== 'z' && v !== 'r' && v !== 'θ') assignCounts.set(v, (assignCounts.get(v) ?? 0) + 1)
   })
   // Any variable also present in baseScope counts as a cross-tab duplicate
   const duplicates = new Set([
@@ -58,7 +58,7 @@ function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}
     cells.forEach((cell) => {
       if (!cell.input.trim()) return
       const mathInput = latexToMathjs(cell.input).trim()
-      if (/^[xy]\s*=/.test(mathInput)) return
+      if (/^(x|y|z|r|θ)\s*=/.test(mathInput)) return
       const v = getAssignedVar(cell.input)
       if (v && duplicates.has(v)) return
       try { evaluateCell(cell.input, fullScope) } catch { /* skip */ }
@@ -90,7 +90,7 @@ function recomputeAll(cells: CellData[], baseScope: Record<string, unknown> = {}
       } catch { /* skip */ }
     }
 
-    const graphEnabled = isGraphable(cell.input, fullScope)
+    const graphEnabled = isGraphable(cell.input, fullScope) || isGraphable3D(cell.input, fullScope) || isGraphablePolar(cell.input, fullScope)
     const hasUndefined = hasUndefinedSymbols(cell.input, fullScope)
     const { result, error } = evaluateCell(cell.input, { ...fullScope })
 
@@ -163,7 +163,7 @@ export default function Notebook() {
         const cells = tab.id === changedTabId ? changedCells : tab.cells
         cells.forEach((c) => {
           const mathInput = latexToMathjs(c.input).trim()
-          if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
+          if (!mathInput || /^(x|y|z|r|θ)\s*=/.test(mathInput)) return
           try { evaluateCell(c.input, globalScope) } catch { /* skip */ }
         })
       })
@@ -442,7 +442,7 @@ export default function Notebook() {
   tabs.forEach((tab) => {
     tab.cells.forEach((c) => {
       const mathInput = latexToMathjs(c.input).trim()
-      if (!mathInput || /^[xy]\s*=/.test(mathInput)) return
+      if (!mathInput || /^(x|y|z|r|θ)\s*=/.test(mathInput)) return
       try { evaluateCell(c.input, scopeSnapshot) } catch { /* skip */ }
     })
   })

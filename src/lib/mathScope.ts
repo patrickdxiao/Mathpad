@@ -124,6 +124,7 @@ export function latexToMathjs(latex: string): string {
   // Unicode math italic x/y (used by MathLive macro rendering) → plain x/y for evaluation
   s = s.replace(/𝑥/g, 'x')
   s = s.replace(/𝑦/g, 'y')
+  s = s.replace(/𝑧/g, 'z')
   s = s.replace(/\\cdot/g, '*')
   s = s.replace(/\\times/g, '*')
   s = s.replace(/\\div/g, '/')
@@ -214,8 +215,216 @@ export function hasUndefinedSymbols(input: string, scope: Record<string, unknown
       if (n.type === 'SymbolNode') symbols.add(n.name)
     })
     return [...symbols].some(
-      (s) => s !== 'x' && s !== 'y' && !(s in scope) && !MATH_BUILTINS.includes(s) && typeof (math as any)[s] === 'undefined'
+      (s) => s !== 'x' && s !== 'y' && s !== 'r' && s !== 'θ' && !(s in scope) && !MATH_BUILTINS.includes(s) && typeof (math as any)[s] === 'undefined'
     )
+  } catch {
+    return false
+  }
+}
+
+interface Hole { x: number; y: number }
+
+// Numerically find zeros of a compiled function over [lo, hi] using sign-change + bisection.
+// Returns x values where fn(x) ≈ 0.
+function findZeros(fn: (x: number) => number, lo: number, hi: number, steps: number): number[] {
+  const zeros: number[] = []
+  const dx = (hi - lo) / steps
+  let prev = fn(lo)
+
+  for (let s = 1; s <= steps; s++) {
+    const x = lo + s * dx
+    const curr = fn(x)
+    if (!isFinite(prev) || !isFinite(curr)) { prev = curr; continue }
+
+    if (Math.abs(curr) < 1e-12) {
+      if (!zeros.some(z => Math.abs(z - x) < dx * 2)) zeros.push(x)
+    } else if (prev * curr < 0) {
+      let a = x - dx, b = x
+      for (let i = 0; i < 52; i++) {
+        const mid = (a + b) / 2
+        const fmid = fn(mid)
+        if (!isFinite(fmid)) break
+        if (fn(a) * fmid < 0) b = mid
+        else a = mid
+      }
+      const root = (a + b) / 2
+      if (!zeros.some(z => Math.abs(z - root) < dx * 2)) zeros.push(root)
+    }
+    prev = curr
+  }
+  return zeros
+}
+
+// Walk a math.js AST node and collect all DivideNode sub-expressions (numerator, denominator pairs).
+function collectDivisions(node: any): Array<{ num: any; den: any }> {
+  const results: Array<{ num: any; den: any }> = []
+  node.traverse((n: any) => {
+    if (n.type === 'OperatorNode' && n.op === '/' && n.args?.length === 2) {
+      results.push({ num: n.args[0], den: n.args[1] })
+    }
+  })
+  return results
+}
+
+// Find removable discontinuities (holes) in expr over [xMin, xMax].
+// A hole exists where the denominator = 0 AND the numerator = 0 (0/0 form).
+// y is approximated by evaluating just inside the discontinuity with a tiny epsilon offset.
+export function findHoles(
+  expr: string,
+  scope: Record<string, unknown>,
+  xMin: number,
+  xMax: number
+): Hole[] {
+  const EPS = 1e-7
+  const STEPS = 2000
+  const holes: Hole[] = []
+
+  let node: any
+  try {
+    node = math.parse(expr)
+  } catch {
+    return []
+  }
+
+  // Unwrap assignment (y = ...) to just the RHS
+  const plotNode = node.type === 'AssignmentNode' ? node.value : node
+
+  const divisions = collectDivisions(plotNode)
+  if (divisions.length === 0) return []
+
+  for (const { num, den } of divisions) {
+    const denFn = (x: number) => {
+      try { const r = den.evaluate({ ...scope, x }); return typeof r === 'number' ? r : NaN }
+      catch { return NaN }
+    }
+    const numFn = (x: number) => {
+      try { const r = num.evaluate({ ...scope, x }); return typeof r === 'number' ? r : NaN }
+      catch { return NaN }
+    }
+
+    const denZeros = findZeros(denFn, xMin, xMax, STEPS)
+
+    for (const xz of denZeros) {
+      const numVal = numFn(xz)
+      // Only a hole if numerator also ≈ 0 at this point (0/0 form)
+      if (!isFinite(numVal) || Math.abs(numVal) > 1e-6) continue
+
+      // Approximate the limit by evaluating the full expression at xz ± epsilon
+      const evalFull = (x: number) => {
+        try { const r = plotNode.evaluate({ ...scope, x }); return typeof r === 'number' ? r : NaN }
+        catch { return NaN }
+      }
+      const yPlus = evalFull(xz + EPS)
+      const yMinus = evalFull(xz - EPS)
+
+      if (!isFinite(yPlus) && !isFinite(yMinus)) continue
+
+      // Take the average of the two-sided estimates
+      const y = isFinite(yPlus) && isFinite(yMinus)
+        ? (yPlus + yMinus) / 2
+        : isFinite(yPlus) ? yPlus : yMinus
+
+      // Deduplicate
+      if (!holes.some(h => Math.abs(h.x - xz) < (xMax - xMin) / STEPS * 4)) {
+        holes.push({ x: xz, y })
+      }
+    }
+  }
+
+  return holes
+}
+
+// Returns the 3D form of an expression, or null if not 3D graphable.
+// 'zxy' = z = f(x,y):  surface, x/y as inputs
+// 'yxz' = y = f(x,z):  surface, x/z as inputs
+// 'xyz' = x = f(y,z):  surface, y/z as inputs
+// 'zx'  = z = f(x):   ribbon along y axis
+// 'yx'  = y = f(x):   ribbon along z axis
+// 'zy'  = z = f(y):   ribbon along x axis
+// 'xy'  = x = f(y):   ribbon along z axis
+// 'xz'  = x = f(z):   ribbon along y axis
+// 'yz'  = y = f(z):   ribbon along x axis
+export function get3DForm(input: string, scope: Record<string, unknown>): 'yxz' | 'zxy' | 'xyz' | 'zx' | 'yx' | 'zy' | 'xy' | 'xz' | 'yz' | null {
+  if (SUM_RE.test(input)) return null
+  try {
+    const node = math.parse(latexToMathjs(input))
+    const assignedVar = node.type === 'AssignmentNode' ? (node as any).name : null
+    const plotNode = node.type === 'AssignmentNode' ? (node as any).value : node
+    const symbols = new Set<string>()
+    plotNode.traverse((n: any) => { if (n.type === 'SymbolNode') symbols.add(n.name) })
+
+    const reserved = new Set(['x', 'y', 'z', 'r', 'θ'])
+    const hasUndef = (allowed: string[]) => [...symbols].some(
+      (s) => !allowed.includes(s) && !reserved.has(s) && !(s in scope) && !MATH_BUILTINS.includes(s) && typeof (math as any)[s] === 'undefined'
+    )
+
+    // Surfaces (two free variables)
+    if (assignedVar === 'z' && symbols.has('x') && symbols.has('y') && !hasUndef(['x', 'y'])) return 'zxy'
+    if (assignedVar === 'y' && symbols.has('x') && symbols.has('z') && !hasUndef(['x', 'z'])) return 'yxz'
+    if (assignedVar === 'x' && symbols.has('y') && symbols.has('z') && !hasUndef(['y', 'z'])) return 'xyz'
+
+    // Ribbons (one free variable)
+    if (assignedVar === 'z' && symbols.has('x') && !symbols.has('y') && !hasUndef(['x'])) return 'zx'
+    if (assignedVar === 'y' && symbols.has('x') && !symbols.has('z') && !hasUndef(['x'])) return 'yx'
+    if (assignedVar === 'z' && symbols.has('y') && !symbols.has('x') && !hasUndef(['y'])) return 'zy'
+    if (assignedVar === 'x' && symbols.has('y') && !symbols.has('z') && !hasUndef(['y'])) return 'xy'
+    if (assignedVar === 'x' && symbols.has('z') && !symbols.has('y') && !hasUndef(['z'])) return 'xz'
+    if (assignedVar === 'y' && symbols.has('z') && !symbols.has('x') && !hasUndef(['z'])) return 'yz'
+
+    // Constant planes: y = c, x = c, z = c (no free 3D variables in RHS)
+    const has3DVar = symbols.has('x') || symbols.has('y') || symbols.has('z')
+    if (!has3DVar && !hasUndef([])) {
+      if (assignedVar === 'y') return 'yxz'
+      if (assignedVar === 'x') return 'xyz'
+      if (assignedVar === 'z') return 'zxy'
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function isGraphable3D(input: string, scope: Record<string, unknown>): boolean {
+  return get3DForm(input, scope) !== null
+}
+
+// Returns true if the expression is a polar curve: r = f(theta) or bare f(theta)
+export function isGraphablePolar(input: string, scope: Record<string, unknown>): boolean {
+  if (SUM_RE.test(input)) return false
+  try {
+    const node = math.parse(latexToMathjs(input))
+    const assignedVar = node.type === 'AssignmentNode' ? (node as any).name : null
+    const plotNode = node.type === 'AssignmentNode' ? (node as any).value : node
+    const symbols = new Set<string>()
+    plotNode.traverse((n: any) => { if (n.type === 'SymbolNode') symbols.add(n.name) })
+
+    const polarReserved = new Set(['r', 'θ', 'x', 'y', 'z'])
+    const hasUndef = [...symbols].some(
+      (s) => !polarReserved.has(s) && !(s in scope) && !MATH_BUILTINS.includes(s) && typeof (math as any)[s] === 'undefined'
+    )
+    if (hasUndef) return false
+
+    // r = f(θ): explicit polar curve
+    if (assignedVar === 'r' && symbols.has('θ')) return true
+    // bare f(θ): expression using θ only
+    if (!assignedVar && symbols.has('θ')) return true
+
+    return false
+  } catch {
+    return false
+  }
+}
+
+// Returns true if the expression is x = f(y) (parametric horizontal sweep)
+export function isXofY(input: string, scope: Record<string, unknown>): boolean {
+  if (SUM_RE.test(input)) return false
+  try {
+    const node = math.parse(latexToMathjs(input))
+    if (node.type !== 'AssignmentNode' || (node as any).name !== 'x') return false
+    const symbols = new Set<string>()
+    ;(node as any).value.traverse((n: any) => { if (n.type === 'SymbolNode') symbols.add(n.name) })
+    return symbols.has('y') && !hasUndefinedSymbols(input, scope)
   } catch {
     return false
   }
@@ -228,8 +437,8 @@ export function isGraphable(input: string, scope: Record<string, unknown>): bool
   try {
     const node = math.parse(latexToMathjs(input))
 
-    // x = <number> is a vertical line — graphable
-    if (node.type === 'AssignmentNode' && (node as any).name === 'x') return true
+    // x = f(y): horizontal sweep — graphable
+    if (node.type === 'AssignmentNode' && (node as any).name === 'x') return !hasUndefinedSymbols(input, scope)
 
     const symbols = new Set<string>()
     node.traverse((n: any) => {
@@ -241,7 +450,6 @@ export function isGraphable(input: string, scope: Record<string, unknown>): bool
     if (node.type === 'AssignmentNode' && (node as any).name === 'y') return !hasUndefinedSymbols(input, scope)
     // f(x): expression containing x — graphable as y = f(x)
     if (hasX) return !hasUndefinedSymbols(input, scope)
-    // bare y or y in expression without x — not a curve we can plot
     return false
   } catch {
     return false
