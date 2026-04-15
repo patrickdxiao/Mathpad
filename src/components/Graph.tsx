@@ -33,6 +33,8 @@ function niceInterval(rawInterval: number): number {
 function buildPlotFn(expr: string, scope: Record<string, unknown>): ((x: number) => number) | null {
   try {
     const node = math.parse(expr)
+    // z = anything is 3D only — never plot as a 2D curve
+    if (node.type === 'AssignmentNode' && (node as any).name === 'z') return null
     const plotNode = node.type === 'AssignmentNode' ? (node as any).value : node
     return (x: number) => {
       try {

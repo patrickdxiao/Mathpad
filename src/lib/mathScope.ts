@@ -437,6 +437,8 @@ export function isGraphable(input: string, scope: Record<string, unknown>): bool
   try {
     const node = math.parse(latexToMathjs(input))
 
+    // z = anything: 3D only, not a 2D curve
+    if (node.type === 'AssignmentNode' && (node as any).name === 'z') return false
     // x = f(y): horizontal sweep — graphable
     if (node.type === 'AssignmentNode' && (node as any).name === 'x') return !hasUndefinedSymbols(input, scope)
 
