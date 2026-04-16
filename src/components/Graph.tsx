@@ -314,9 +314,13 @@ function project3D(
 export default function Graph({ expressions, colors, scope, onCurveClick, graphMode, onGraphModeChange }: GraphProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const view = useRef({ cx: 0, cy: 0, scale: 50 })
-  const view3D = useRef({ rotX: 0.4, rotY: -0.6, unitsPerHalf: 0 })
+  const view3D = useRef({ rotX: 0.4, rotY: -0.6, unitsPerHalf: 0, panWX: 0, panWY: 0, panWZ: 0 })
   const drag = useRef<{ x: number; y: number; cx: number; cy: number } | null>(null)
-  const drag3D = useRef<{ x: number; y: number; rotX: number; rotY: number } | null>(null)
+  const drag3D = useRef<{ x: number; y: number } | null>(null)
+  /** Removes window mousemove/mouseup installed during a 3D drag (canvas mouse events alone are unreliable on some macOS setups). */
+  const drag3DWindowCleanup = useRef<(() => void) | null>(null)
+  /** Shift held (macOS sometimes omits shiftKey while dragging). */
+  const shiftKeyHeld3D = useRef(false)
   const size = useRef({ w: 0, h: 0 })
   const mouse = useRef<{ px: number; py: number } | null>(null)
   const [mouseCoords, setMouseCoords] = useState<{ x: number; y: number } | null>(null)
@@ -344,6 +348,32 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
   const xofYSamplesRef = useRef<({ x: number; y: number }[] | null)[]>([])
   const polarFnsRef = useRef<(((theta: number) => number) | null)[]>([])
 
+  useEffect(() => {
+    if (!is3D) {
+      shiftKeyHeld3D.current = false
+      return
+    }
+    const shiftCodes = new Set(['ShiftLeft', 'ShiftRight'])
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (shiftCodes.has(ev.code)) shiftKeyHeld3D.current = true
+    }
+    const onKeyUp = (ev: KeyboardEvent) => {
+      if (shiftCodes.has(ev.code)) shiftKeyHeld3D.current = false
+    }
+    const onBlur = () => {
+      shiftKeyHeld3D.current = false
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+      window.removeEventListener('blur', onBlur)
+      shiftKeyHeld3D.current = false
+    }
+  }, [is3D])
+
   const draw3D = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -354,9 +384,16 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
     if (w === 0 || h === 0) return
     if (view3D.current.unitsPerHalf === 0) view3D.current.unitsPerHalf = 6
     const { rotX, rotY, unitsPerHalf } = view3D.current
+    const panWX = Number.isFinite(view3D.current.panWX) ? view3D.current.panWX : 0
+    const panWY = Number.isFinite(view3D.current.panWY) ? view3D.current.panWY : 0
+    const panWZ = Number.isFinite(view3D.current.panWZ) ? view3D.current.panWZ : 0
+    if (!Number.isFinite(view3D.current.panWX)) view3D.current.panWX = 0
+    if (!Number.isFinite(view3D.current.panWY)) view3D.current.panWY = 0
+    if (!Number.isFinite(view3D.current.panWZ)) view3D.current.panWZ = 0
 
-    const RANGE = unitsPerHalf * 1.5
-    const interval = niceInterval(unitsPerHalf / 4)
+    // Keep box mode scaling numerically consistent across all axes.
+    // (Fit mode keeps a small padding for breathing room.)
+    const RANGE = fit3D ? unitsPerHalf * 1.5 : unitsPerHalf
 
     // In box mode, render into a virtual viewport (60% of shorter dim) centered on canvas.
     // Scale is fixed so RANGE always fills the virtual viewport — zoom only changes labels/intervals.
@@ -365,6 +402,9 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
     const scale = fit3D
       ? Math.min(vw, vh) / 2 / unitsPerHalf
       : Math.min(vw, vh) / 2 / RANGE
+    // Match 2D spacing rule: target ~80px between major gridlines.
+    const interval = niceInterval(80 / scale)
+    const minorInterval = interval / 5
 
     const dpr = window.devicePixelRatio
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -380,29 +420,33 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
     // project3D centers on vw/2, vh/2 — then we offset to canvas center
     const offX = (w - vw) / 2
     const offY = (h - vh) / 2
-    const sem = (x: number, y: number, z: number) => {
+    // Fixed frame: cube, grid planes, axes — always centered on origin.
+    const sem0 = (x: number, y: number, z: number) => {
       const p = project3D(y, z, x, rotX, rotY, scale, vw, vh, false)
       return { px: p.px + offX, py: p.py + offY, d: p.depth }
     }
-
-    const origin = sem(0, 0, 0)
-    const axisEnd = RANGE
+    // Surface frame: subtract world-space pan before projecting so the surface shifts
+    // relative to the fixed cube. Rotation then naturally pivots around the panned center.
+    const sem = (x: number, y: number, z: number) => {
+      const p = project3D(y - panWY, z - panWZ, x - panWX, rotX, rotY, scale, vw, vh, false)
+      return { px: p.px + offX, py: p.py + offY, d: p.depth }
+    }
 
     // Compute cube corners (used for both clip hull and wireframe)
     const cubeR = RANGE
     const cubeCorners = [
-      sem(-cubeR,-cubeR,-cubeR), sem( cubeR,-cubeR,-cubeR), sem( cubeR, cubeR,-cubeR), sem(-cubeR, cubeR,-cubeR),
-      sem(-cubeR,-cubeR, cubeR), sem( cubeR,-cubeR, cubeR), sem( cubeR, cubeR, cubeR), sem(-cubeR, cubeR, cubeR),
+      sem0(-cubeR,-cubeR,-cubeR), sem0( cubeR,-cubeR,-cubeR), sem0( cubeR, cubeR,-cubeR), sem0(-cubeR, cubeR,-cubeR),
+      sem0(-cubeR,-cubeR, cubeR), sem0( cubeR,-cubeR, cubeR), sem0( cubeR, cubeR, cubeR), sem0(-cubeR, cubeR, cubeR),
     ]
 
-    // Box mode: draw back wireframe edges first (behind content)
+    // Box mode: draw cube wireframe edges with consistent styling.
     if (!fit3D) {
       const allEdges = [
         [0,1],[1,2],[2,3],[3,0],
         [4,5],[5,6],[6,7],[7,4],
         [0,4],[1,5],[2,6],[3,7],
       ]
-      ctx.strokeStyle = 'rgba(180,185,200,0.55)'
+      ctx.strokeStyle = 'rgba(170,175,195,0.72)'
       ctx.lineWidth = 0.8
       allEdges.forEach(([a, b]) => {
         ctx.beginPath()
@@ -422,45 +466,82 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
       ctx.clip()
     }
 
+    // drawPlane renders a grid plane. panOff is the pan component along the plane's
+    // two swept axes, so gridlines stay aligned to world coordinates as you pan.
     const drawPlane = (
-      corners: ReturnType<typeof sem>[],
+      corners: ReturnType<typeof sem0>[],
       fill: string,
       stroke: string,
-      gridFn: (t: number) => [ReturnType<typeof sem>, ReturnType<typeof sem>, ReturnType<typeof sem>, ReturnType<typeof sem>]
+      minorStroke: string,
+      panOff1: number,
+      panOff2: number,
+      gridFn: (t: number) => [ReturnType<typeof sem0>, ReturnType<typeof sem0>, ReturnType<typeof sem0>, ReturnType<typeof sem0>]
     ) => {
       ctx.beginPath()
       ctx.moveTo(corners[0].px, corners[0].py)
       corners.slice(1).forEach(p => ctx.lineTo(p.px, p.py))
       ctx.closePath()
       ctx.fillStyle = fill; ctx.fill()
-      ctx.strokeStyle = stroke; ctx.lineWidth = 0.5
-      const i0 = Math.ceil(-RANGE / interval) * interval
-      for (let t = i0; t <= RANGE + interval * 0.01; t += interval) {
-        const [a, b, c, d] = gridFn(t)
+
+      // Gridlines sweep from panOff-RANGE to panOff+RANGE, snapped to interval grid
+      const mStart1 = Math.ceil((panOff1 - RANGE) / minorInterval) * minorInterval
+      const mStart2 = Math.ceil((panOff2 - RANGE) / minorInterval) * minorInterval
+      const iStart1 = Math.ceil((panOff1 - RANGE) / interval) * interval
+      const iStart2 = Math.ceil((panOff2 - RANGE) / interval) * interval
+
+      // Minor gridlines
+      ctx.strokeStyle = minorStroke
+      ctx.lineWidth = 0.35
+      for (let t = mStart1; t <= panOff1 + RANGE + minorInterval * 0.01; t += minorInterval) {
+        if (Math.abs(((t / interval) % 1 + 1) % 1) < 0.01 || Math.abs(((t / interval) % 1 + 1) % 1 - 1) < 0.01) continue
+        const [a, b] = gridFn(t)
         ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke()
+      }
+      for (let t = mStart2; t <= panOff2 + RANGE + minorInterval * 0.01; t += minorInterval) {
+        if (Math.abs(((t / interval) % 1 + 1) % 1) < 0.01 || Math.abs(((t / interval) % 1 + 1) % 1 - 1) < 0.01) continue
+        const [,, c, d] = gridFn(t)
+        ctx.beginPath(); ctx.moveTo(c.px, c.py); ctx.lineTo(d.px, d.py); ctx.stroke()
+      }
+
+      // Major gridlines
+      ctx.strokeStyle = stroke
+      ctx.lineWidth = 0.5
+      for (let t = iStart1; t <= panOff1 + RANGE + interval * 0.01; t += interval) {
+        const [a, b] = gridFn(t)
+        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke()
+      }
+      for (let t = iStart2; t <= panOff2 + RANGE + interval * 0.01; t += interval) {
+        const [,, c, d] = gridFn(t)
         ctx.beginPath(); ctx.moveTo(c.px, c.py); ctx.lineTo(d.px, d.py); ctx.stroke()
       }
     }
 
-    // XY plane (z=0, floor)
+    // Grid planes pass through world origin (0,0,0) and move with pan since sem
+    // subtracts pan — so they appear at (−panW) in view space, staying anchored to
+    // the world grid as the view window shifts over the scene.
+    const R = RANGE
+    // XY plane (z=0): sweeps x and y
     drawPlane(
-      [sem(-RANGE, -RANGE, 0), sem(RANGE, -RANGE, 0), sem(RANGE, RANGE, 0), sem(-RANGE, RANGE, 0)],
-      'rgba(200,220,255,0.13)', '#dde4f0',
-      t => [sem(t, -RANGE, 0), sem(t, RANGE, 0), sem(-RANGE, t, 0), sem(RANGE, t, 0)]
+      [sem(panWX-R, panWY-R, 0), sem(panWX+R, panWY-R, 0), sem(panWX+R, panWY+R, 0), sem(panWX-R, panWY+R, 0)],
+      'rgba(200,220,255,0.13)', '#dde4f0', 'rgba(221,228,240,0.38)',
+      panWX, panWY,
+      t => [sem(t, panWY-R, 0), sem(t, panWY+R, 0), sem(panWX-R, t, 0), sem(panWX+R, t, 0)]
     )
 
-    // XZ plane (y=0)
+    // XZ plane (y=0): sweeps x and z
     drawPlane(
-      [sem(-RANGE, 0, -RANGE), sem(RANGE, 0, -RANGE), sem(RANGE, 0, RANGE), sem(-RANGE, 0, RANGE)],
-      'rgba(200,255,210,0.10)', 'rgba(100,200,120,0.25)',
-      t => [sem(t, 0, -RANGE), sem(t, 0, RANGE), sem(-RANGE, 0, t), sem(RANGE, 0, t)]
+      [sem(panWX-R, 0, panWZ-R), sem(panWX+R, 0, panWZ-R), sem(panWX+R, 0, panWZ+R), sem(panWX-R, 0, panWZ+R)],
+      'rgba(200,255,210,0.10)', 'rgba(100,200,120,0.25)', 'rgba(100,200,120,0.12)',
+      panWX, panWZ,
+      t => [sem(t, 0, panWZ-R), sem(t, 0, panWZ+R), sem(panWX-R, 0, t), sem(panWX+R, 0, t)]
     )
 
-    // YZ plane (x=0)
+    // YZ plane (x=0): sweeps y and z
     drawPlane(
-      [sem(0, -RANGE, -RANGE), sem(0, RANGE, -RANGE), sem(0, RANGE, RANGE), sem(0, -RANGE, RANGE)],
-      'rgba(255,210,200,0.10)', 'rgba(220,120,100,0.25)',
-      t => [sem(0, t, -RANGE), sem(0, t, RANGE), sem(0, -RANGE, t), sem(0, RANGE, t)]
+      [sem(0, panWY-R, panWZ-R), sem(0, panWY+R, panWZ-R), sem(0, panWY+R, panWZ+R), sem(0, panWY-R, panWZ+R)],
+      'rgba(255,210,200,0.10)', 'rgba(220,120,100,0.25)', 'rgba(220,120,100,0.12)',
+      panWY, panWZ,
+      t => [sem(0, t, panWZ-R), sem(0, t, panWZ+R), sem(0, panWY-R, t), sem(0, panWY+R, t)]
     )
 
     // drawAxesAndLabels is defined after the depth buffer so it can sample it
@@ -472,33 +553,43 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
     expressions.forEach((expr, ei) => {
       const form3D = get3DForm(expr, scope)
       const fn3D = form3D ? build3DFn(expr, scope, form3D) : null
-      if (!fn3D) return
+      if (!form3D || !fn3D) return
 
-      // Sample grid: a and b sweep over [-RANGE, RANGE]
-      // fn3D(a, b) returns [x, y, z] world coordinates
       type V3 = [number, number, number]
+
+      // For ribbon forms the b parameter is a free axis (no functional dependence).
+      // Extend b to cover the full panned cube range and skip clipping on that axis.
+      const freeAxis: number | null =
+        form3D === 'zx' || form3D === 'yx' || form3D === 'xz' || form3D === 'yz' ? 1
+        : form3D === 'zy' || form3D === 'xy' ? 0
+        : null
+      const freePanOff = freeAxis === 0 ? panWX : freeAxis === 1 ? panWY : 0
+      const bMin = freeAxis !== null ? freePanOff - RANGE : -RANGE
+      const bMax = freeAxis !== null ? freePanOff + RANGE : RANGE
+      const bSteps = freeAxis !== null ? 1 : GRID  // ribbon only needs 2 samples in b
+
       const pts: V3[][] = []
       for (let ia = 0; ia <= GRID; ia++) {
         pts[ia] = []
-        for (let ib = 0; ib <= GRID; ib++) {
+        for (let ib = 0; ib <= bSteps; ib++) {
           const av = -RANGE + (2 * RANGE * ia) / GRID
-          const bv = -RANGE + (2 * RANGE * ib) / GRID
+          const bv = bMin + (bMax - bMin) * ib / bSteps
           pts[ia][ib] = fn3D(av, bv)
         }
       }
 
-      const clipPlanes: [number, number][] = fit3D
-        ? [[2, 1], [2, -1]]
-        : [[0, 1], [0, -1], [1, 1], [1, -1], [2, 1], [2, -1]]
+      const clipPlanes: [number, number][] = ([0, 1, 2] as const)
+        .flatMap(axis => axis === freeAxis ? [] : [[axis, 1], [axis, -1]] as [number, number][])
 
+      const panW: [number, number, number] = [panWX, panWY, panWZ]
       const clipPoly = (poly: V3[]): V3[] => {
         for (const [axis, sign] of clipPlanes) {
           if (poly.length === 0) return poly
           const clipped: V3[] = []
           for (let i = 0; i < poly.length; i++) {
             const a = poly[i], b = poly[(i + 1) % poly.length]
-            const da = sign * a[axis] - RANGE
-            const db = sign * b[axis] - RANGE
+            const da = sign * (a[axis] - panW[axis]) - RANGE
+            const db = sign * (b[axis] - panW[axis]) - RANGE
             if (da <= 0) clipped.push(a)
             if ((da < 0 && db > 0) || (da > 0 && db < 0)) {
               const t = da / (da - db)
@@ -511,7 +602,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
       }
 
       for (let ia = 0; ia < GRID; ia++) {
-        for (let ib = 0; ib < GRID; ib++) {
+        for (let ib = 0; ib < bSteps; ib++) {
           const p00 = pts[ia][ib], p10 = pts[ia+1][ib]
           const p01 = pts[ia][ib+1], p11 = pts[ia+1][ib+1]
           if (!p00.every(isFinite) || !p10.every(isFinite) || !p01.every(isFinite) || !p11.every(isFinite)) continue
@@ -538,7 +629,10 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
           const nz = nViewZ / nLen  // normalized: positive = facing camera
 
           // Project to physical pixels (depth buffer is in physical pixels)
-          const proj = poly.map(([x, y, z]) => { const s = sem(x, y, z); return { px: s.px * dpr, py: s.py * dpr, d: s.d } })
+          const proj = poly.map(([x, y, z]) => {
+            const s = sem(x, y, z)
+            return { px: s.px * dpr, py: s.py * dpr, d: s.d }
+          })
 
           // Triangulate fan from vertex 0 and rasterize each triangle into depth buffer
           const faceRgb = hexToRgb(colors[ei])
@@ -619,26 +713,32 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
       }
 
       const drawAxis = (
-        sx: number,
-        sy: number,
-        sz: number,
+        axis: 'x' | 'y' | 'z',
         color: string,
         fadeColor: string,
         fadeRgb: [number, number, number],
         label: string
       ) => {
-        const posEnd = sem(sx * axisEnd, sy * axisEnd, sz * axisEnd)
-        const negEnd = sem(-sx * RANGE, -sy * RANGE, -sz * RANGE)
+        const panOff = axis === 'x' ? panWX : axis === 'y' ? panWY : panWZ
+        const [minV, maxV] = [panOff - RANGE, panOff + RANGE]
+        const pointDraw = (v: number) => (
+          axis === 'x' ? sem(v, 0, 0)
+            : axis === 'y' ? sem(0, v, 0)
+              : sem(0, 0, v)
+        )
+        const originDraw = sem(0, 0, 0)
+        const posEnd = pointDraw(maxV)
+        const negEnd = pointDraw(minV)
 
         // Negative half is always the behind shade.
-        drawTubeSegment(negEnd, origin, fadeColor, 1.6, 2.7, 0.2)
+        drawTubeSegment(negEnd, originDraw, fadeColor, 1.6, 2.7, 0.2)
 
         // Positive half: smooth occlusion to avoid spotty toggling at intersections.
-        const points: Array<{ px: number; py: number; d: number }> = [origin]
-        const occ: number[] = [isOccluded(origin) ? 1 : 0]
+        const points: Array<{ px: number; py: number; d: number }> = [originDraw]
+        const occ: number[] = [isOccluded(originDraw) ? 1 : 0]
         for (let s = 1; s <= AXIS_SEGMENTS; s++) {
           const t = s / AXIS_SEGMENTS
-          const wpt = sem(sx * axisEnd * t, sy * axisEnd * t, sz * axisEnd * t)
+          const wpt = pointDraw(maxV * t)
           points.push(wpt)
           occ.push(isOccluded(wpt) ? 1 : 0)
         }
@@ -653,7 +753,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
           return count > 0 ? sum / count : occ[i]
         })
 
-        let prevPt = origin
+        let prevPt = originDraw
         for (let s = 1; s <= AXIS_SEGMENTS; s++) {
           const wpt = points[s]
           const occT = (smoothedOcc[s - 1] + smoothedOcc[s]) * 0.5
@@ -669,43 +769,57 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
         }
 
         // Arrowhead at tip
-        const nearTip = sem(sx * axisEnd * 0.97, sy * axisEnd * 0.97, sz * axisEnd * 0.97)
+        const nearTip = pointDraw(maxV * 0.97)
         drawArrow(posEnd, nearTip, blendedAxisColor(color, fadeRgb, smoothedOcc[smoothedOcc.length - 1] ?? 0))
 
         // Label — offset beyond tip, clamped to canvas bounds
-        const rawLx = posEnd.px + (posEnd.px - origin.px) * 0.18
-        const rawLy = posEnd.py + (posEnd.py - origin.py) * 0.18
-        const lx = Math.max(PAD, Math.min(w - PAD, rawLx))
-        const ly = Math.max(PAD, Math.min(h - PAD, rawLy))
+        const rawLx = posEnd.px + (posEnd.px - originDraw.px) * 0.18
+        const rawLy = posEnd.py + (posEnd.py - originDraw.py) * 0.18
+        ctx.font = 'bold 12px system-ui, sans-serif'
+        const tw = ctx.measureText(label).width
+        const th = 12
+        const lx = Math.max(PAD + tw / 2, Math.min(w - PAD - tw / 2, rawLx))
+        const ly = Math.max(PAD + th / 2, Math.min(h - PAD - th / 2, rawLy))
 
         ctx.fillStyle = blendedAxisColor(color, fadeRgb, smoothedOcc[smoothedOcc.length - 1] ?? 0)
-        ctx.font = 'bold 12px system-ui, sans-serif'
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText(label, lx, ly)
       }
 
-      drawAxis(1, 0, 0, '#ff3b30', 'rgba(255,59,48,0.28)', [255, 140, 135], 'x')
-      drawAxis(0, 1, 0, '#31b24c', 'rgba(49,178,76,0.28)', [155, 220, 168], 'y')
-      drawAxis(0, 0, 1, '#2f6dff', 'rgba(47,109,255,0.28)', [152, 184, 255], 'z')
+      drawAxis('x', '#ff3b30', 'rgba(255,59,48,0.28)', [255, 140, 135], 'x')
+      drawAxis('y', '#31b24c', 'rgba(49,178,76,0.28)', [155, 220, 168], 'y')
+      drawAxis('z', '#2f6dff', 'rgba(47,109,255,0.28)', [152, 184, 255], 'z')
 
       ctx.font = '10px system-ui, sans-serif'
       ctx.fillStyle = '#999'
-      let tickCount = 0
-      for (let v = interval; v <= RANGE + interval * 0.01; v += interval) {
-        tickCount++
-        if (tickCount % 2 !== 0) continue
-        const lbl = formatLabel(v)
-        const xp = sem(v, 0, 0)
-        ctx.textAlign = 'center'; ctx.textBaseline = 'top'
-        ctx.fillText(lbl, xp.px, xp.py + 3)
-        const yp = sem(0, v, 0)
-        ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
-        ctx.fillText(lbl, yp.px + 4, yp.py)
-        const zp = sem(0, 0, v)
-        ctx.textAlign = 'right'; ctx.textBaseline = 'middle'
-        ctx.fillText(lbl, zp.px - 4, zp.py)
+      const drawTickLabels = (axis: 'x' | 'y' | 'z', minV: number, maxV: number) => {
+        const i0 = Math.ceil(minV / interval) * interval
+        const stepsPerSide = Math.max(1, Math.floor(Math.max(Math.abs(minV), Math.abs(maxV)) / interval))
+        const labelStride = Math.max(1, Math.ceil(stepsPerSide / 3))
+        for (let v = i0; v <= maxV + interval * 0.01; v += interval) {
+          if (Math.abs(v) < interval * 0.01) continue
+          const stepIndex = Math.round(v / interval)
+          if (Math.abs(stepIndex) % labelStride !== 0) continue
+          const lbl = formatLabel(v)
+          if (axis === 'x') {
+            const p = sem(v, 0, 0)
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+            ctx.fillText(lbl, p.px, p.py + 3)
+          } else if (axis === 'y') {
+            const p = sem(0, v, 0)
+            ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+            ctx.fillText(lbl, p.px + 4, p.py)
+          } else {
+            const p = sem(0, 0, v)
+            ctx.textAlign = 'right'; ctx.textBaseline = 'middle'
+            ctx.fillText(lbl, p.px - 4, p.py)
+          }
+        }
       }
+      drawTickLabels('x', panWX - RANGE, panWX + RANGE)
+      drawTickLabels('y', panWY - RANGE, panWY + RANGE)
+      drawTickLabels('z', panWZ - RANGE, panWZ + RANGE)
     }
 
     // Composite depth-tested surfaces onto canvas via offscreen ImageData
@@ -751,25 +865,15 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
 
     drawAxesAndLabels()
 
-    // Box mode: restore clip and draw front edges on top of content
     if (!fit3D) {
       ctx.restore()
-      const frontEdges = [[4,5],[5,6],[6,7],[7,4],[2,6],[3,7],[1,2],[2,3]]
-      ctx.strokeStyle = 'rgba(160,165,185,0.8)'
-      ctx.lineWidth = 0.8
-      frontEdges.forEach(([a, b]) => {
-        ctx.beginPath()
-        ctx.moveTo(cubeCorners[a].px, cubeCorners[a].py)
-        ctx.lineTo(cubeCorners[b].px, cubeCorners[b].py)
-        ctx.stroke()
-      })
     }
 
     ctx.font = LABEL_FONT
     ctx.textAlign = 'left'
     ctx.textBaseline = 'top'
     ctx.fillStyle = '#aaa'
-    ctx.fillText('Drag to rotate · Scroll to zoom', 8, 8)
+    ctx.fillText('Drag to rotate · Shift+drag to pan · Scroll to zoom', 8, 8)
 
   }, [expressions, colors, scope, fit3D])
 
@@ -1492,11 +1596,76 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
     return () => canvas.removeEventListener('wheel', onWheel)
   }, [draw, draw3D, drawPolar, lockViewport, is3D, isPolar])
 
+  function end3DWindowDrag() {
+    drag3DWindowCleanup.current?.()
+    drag3DWindowCleanup.current = null
+    drag3D.current = null
+  }
+
+  function apply3DDragStep(
+    e: Pick<MouseEvent, 'clientX' | 'clientY' | 'shiftKey'> & { getModifierState(key: string): boolean }
+  ) {
+    if (!drag3D.current) return
+    const dx = e.clientX - drag3D.current.x
+    const dy = e.clientY - drag3D.current.y
+    const panning =
+      e.shiftKey || e.getModifierState('Shift') || shiftKeyHeld3D.current
+    if (panning) {
+      const { w, h } = size.current
+      const u = Math.max(view3D.current.unitsPerHalf, 0.01)
+      const vw = fit3D ? w : Math.min(w, h) * 0.6
+      const vh = fit3D ? h : Math.min(w, h) * 0.6
+      const projScale = Math.min(vw, vh) / 2 / u
+      // Convert screen drag to world-space pan using the camera's right and up vectors.
+      // These are the inverse rows of the view rotation matrix for our rotY → rotX convention.
+      // rightW: world direction that maps to screen +x
+      // upW:    world direction that maps to screen +y (note screen y is flipped vs world z)
+      const { rotX, rotY } = view3D.current
+      const cosX = Math.cos(rotX), sinX = Math.sin(rotX)
+      const cosY = Math.cos(rotY), sinY = Math.sin(rotY)
+      // sem maps world(x,y,z) → project3D(y, z, x).
+      // project3D screen-right axis (x1) = cosY * proj_x + sinY * proj_z
+      //   → in world: proj_x = world_y, proj_z = world_x → rightY = cosY, rightX = sinY
+      // project3D screen-up axis (y2) = cosX * proj_y - sinX * z1
+      //   z1 = -proj_x*sinY + proj_z*cosY → world: -world_y*sinY + world_x*cosY
+      //   y2 = cosX*world_z - sinX*(-world_y*sinY + world_x*cosY)
+      //      → upZ = cosX, upY = sinX*sinY, upX = -sinX*cosY
+      const rightX = sinY,  rightY = cosY,  rightZ = 0
+      const upX    = -sinX * cosY, upY = sinX * sinY, upZ = cosX
+      const worldDX = dx / projScale
+      const worldDY = dy / projScale
+      // Subtract pan world offset: dragging right should shift surface in the right direction.
+      view3D.current.panWX -= worldDX * rightX - worldDY * upX
+      view3D.current.panWY -= worldDX * rightY - worldDY * upY
+      view3D.current.panWZ -= worldDX * rightZ - worldDY * upZ
+    } else {
+      view3D.current.rotY -= dx * 0.01
+      view3D.current.rotX = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, view3D.current.rotX - dy * 0.01))
+    }
+    drag3D.current = { x: e.clientX, y: e.clientY }
+    draw3D()
+  }
+
   function handleMouseDown(e: React.MouseEvent) {
     setSettingsOpen(false)
     setModeMenuOpen(false)
     if (is3D) {
-      drag3D.current = { x: e.clientX, y: e.clientY, rotX: view3D.current.rotX, rotY: view3D.current.rotY }
+      if (e.button !== 0) return
+      end3DWindowDrag()
+      drag3D.current = { x: e.clientX, y: e.clientY }
+      const onMove = (ev: MouseEvent) => {
+        if (!drag3D.current) return
+        apply3DDragStep(ev)
+      }
+      const onUp = () => {
+        end3DWindowDrag()
+      }
+      drag3DWindowCleanup.current = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
       return
     }
     if (!lockViewport) drag.current = { x: e.clientX, y: e.clientY, cx: view.current.cx, cy: view.current.cy }
@@ -1509,16 +1678,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
     const px = e.clientX - rect.left
     const py = e.clientY - rect.top
 
-    if (is3D) {
-      if (drag3D.current) {
-        const dx = e.clientX - drag3D.current.x
-        const dy = e.clientY - drag3D.current.y
-        view3D.current.rotY = drag3D.current.rotY - dx * 0.01
-        view3D.current.rotX = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, drag3D.current.rotX - dy * 0.01))
-        draw3D()
-      }
-      return
-    }
+    if (is3D) return
 
     mouse.current = { px, py }
     if (!lockViewport && drag.current) {
@@ -1549,10 +1709,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
   }
 
   function handleMouseUp(e: React.MouseEvent) {
-    if (is3D) {
-      drag3D.current = null
-      return
-    }
+    if (is3D) return // 3D uses window mouseup
     if (drag.current) {
       const moved = Math.abs(e.clientX - drag.current.x) + Math.abs(e.clientY - drag.current.y)
       if (moved < 4) {
@@ -1638,7 +1795,7 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
 
   function handleResetView() {
     if (is3D) {
-      view3D.current = { rotX: 0.4, rotY: -0.6, unitsPerHalf: 6 }
+      view3D.current = { rotX: 0.4, rotY: -0.6, unitsPerHalf: 6, panWX: 0, panWY: 0, panWZ: 0 }
       draw3D()
     } else {
       view.current = { cx: 0, cy: 0, scale: 50 }
@@ -1671,18 +1828,32 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
 
   function handleMouseLeave() {
     drag.current = null
-    drag3D.current = null
+    // 3D drag uses window listeners; don't clear drag3D on canvas leave.
+    if (!is3D || drag3DWindowCleanup.current == null) {
+      drag3D.current = null
+    }
     mouse.current = null
     setMouseCoords(null)
     if (isPolar) drawPolar()
     else if (!is3D) draw()
   }
 
+  useEffect(() => {
+    if (is3D) return
+    end3DWindowDrag()
+  }, [is3D])
+
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <canvas
         ref={canvasRef}
-        style={{ width: '100%', height: '100%', display: 'block', cursor: is3D ? 'grab' : 'default' }}
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'block',
+          cursor: is3D ? 'grab' : 'default',
+          touchAction: is3D ? 'none' : undefined,
+        }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -1723,7 +1894,11 @@ export default function Graph({ expressions, colors, scope, onCurveClick, graphM
               {(['2d', '3d', 'polar'] as GraphMode[]).map((mode) => (
                 <button
                   key={mode}
-                  onClick={() => { onGraphModeChange(mode); setModeMenuOpen(false) }}
+                  onClick={() => {
+                    onGraphModeChange(mode)
+                    if (mode === '3d') setFit3D(false) // Default 3D entry mode: BOX
+                    setModeMenuOpen(false)
+                  }}
                   style={{
                     display: 'block', width: '100%', padding: '8px 14px',
                     textAlign: 'left', border: 'none', cursor: 'pointer',
